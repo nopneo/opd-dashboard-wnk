@@ -1,0 +1,20 @@
+.env
+out/
+__pycache__/
+*.pyc
+dist/
+static/img/hospital_logo.png
+
+# เฉพาะเซิร์ฟเวอร์ของ รพ.วังน้ำเขียว — ไม่ขึ้น GitHub
+deploy_ssh.py
+DEPLOY_WNK.md
+.claude/
+# ไฟล์ภายใน / ภาพต้นฉบับ
+docs/marketplace_reply.md
+docs/floorplan.jpg
+docs/brand/wnk_logo_source.jpg
+/logo.png
+/logo2.png
+/ผัง.jpg
+flow_layout.json
+.venv/

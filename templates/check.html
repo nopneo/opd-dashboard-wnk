@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ตรวจความพร้อมข้อมูล — {{ hospital }}</title>
+{% include "_icons.html" %}
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="sub-page">
+<div class="sheet">
+  {% set ST = {'ok': ('ok', 'ใช้ได้'), 'part': ('mid', 'บางส่วน'), 'none': ('high', 'แทบไม่มี')} %}
+
+  <div class="page-h">
+    <a class="back" href="{{ url_for('dashboard') }}">‹ กลับแดชบอร์ด</a>
+    <div>
+      <div class="ttl">ตรวจความพร้อมของข้อมูล HOSxP</div>
+      <div class="sub">{{ hospital }} · {{ period }}</div>
+    </div>
+    <a class="help-link" href="{{ url_for('help_page') }}#admin">ℹ คู่มือ</a>
+  </div>
+
+  <form class="filters" method="get" action="{{ url_for('check_page') }}">
+    <label>ตั้งแต่ <input type="date" name="d1" value="{{ d1 }}" required></label>
+    <label>ถึง <input type="date" name="d2" value="{{ d2 }}" required></label>
+    <button type="submit">⟳ ตรวจ</button>
+  </form>
+  {% if warn %}<div class="warn">⚠ {{ warn }}</div>{% endif %}
+
+  <div class="manual">
+    <p>แดชบอร์ดคิดเวลาแต่ละขั้นจากตาราง <code>service_time</code> ของ HOSxP
+      แต่ละโรงพยาบาลตั้งค่าเองว่าจุดบริการไหนกดเวลาลงคอลัมน์ไหน — ถ้าขั้นไหนขึ้น <span class="pill high">แทบไม่มี</span>
+      ช่องนั้นบนแดชบอร์ดจะเป็น “–” ให้ดูตารางคอลัมน์ทั้งหมดด้านล่างว่าจุดบริการนั้นกดลงคอลัมน์ไหน แล้วกำหนด <code>OPD_ST_MAP</code></p>
+    <p>ช่วงที่ตรวจ: <b>{{ c.visits | n }}</b> visit · มีแถวใน service_time <b>{{ c.st_pct }}%</b>
+      {% if c.current_env %}· ใช้ค่า <code>OPD_ST_MAP={{ c.current_env }}</code>{% else %}· ใช้คอลัมน์ตามค่าเริ่มต้น{% endif %}</p>
+    {% if c.map_errors %}<div class="warn">⚠ อ่านค่าใน OPD_ST_MAP ไม่ได้: <code>{{ c.map_errors | join(', ') }}</code>
+      (รูปแบบ <code>ชื่อขั้น:serviceN</code> คั่นด้วยจุลภาค)</div>{% endif %}
+
+    {% if c.suggest_env %}
+    <h2>ข้อเสนอการตั้งค่า</h2>
+    <p>พบคอลัมน์ที่น่าจะใช้แทนขั้นที่ไม่มีข้อมูล (ดูจากจุดบริการที่กดเวลา และลำดับเวลาหลังลงทะเบียน)
+      <b>ตรวจกับการทำงานจริงก่อนใช้</b> แล้วเพิ่มบรรทัดนี้ใน <code>.env</code> และรีสตาร์ตแอป</p>
+    <pre class="env">OPD_ST_MAP={{ c.suggest_env }}</pre>
+    {% endif %}
+
+    <h2>1. ขั้นบริการที่แดชบอร์ดใช้</h2>
+    <div class="tw"><table class="t">
+      <tr><th>ขั้น</th><th>ชื่อใน OPD_ST_MAP</th><th>อ่านจาก</th><th>มีข้อมูล</th><th>กดจากจุดบริการ (มากสุด)</th><th>สถานะ</th></tr>
+      {% for s in c.steps %}
+      <tr><td>{{ s.meaning }}</td><td><code>{{ s.alias }}</code></td>
+        <td>{% if s.phys %}<code>{{ s.phys }}</code>{% if s.mapped %} <small>(กำหนดเอง)</small>{% endif %}{% else %}—{% endif %}
+          {% if c.suggest.get(s.col) %}<br><small>เสนอ <code>{{ c.suggest[s.col] }}</code></small>{% endif %}</td>
+        <td>{{ s.pct }}%</td>
+        <td>{% for d in s.deps %}{{ d.name }} <small>{{ d.pct | int }}%</small>{% if not loop.last %} · {% endif %}{% else %}—{% endfor %}</td>
+        <td><span class="pill {{ ST[s.status][0] }}">{{ ST[s.status][1] }}</span></td></tr>
+      {% endfor %}
+    </table></div>
+    <p class="note">ไม่ใช่ทุก visit ผ่านทุกขั้น (เช่น ไม่มียา ไม่ต้องชำระเงิน) — ≥ {{ c.ok_pct }}% ถือว่าใช้ได้ · {{ c.part_pct }}–{{ c.ok_pct - 1 }}% มีบางส่วน</p>
+
+    <h2>2. ช่วงเวลาที่คำนวณได้บนแดชบอร์ด (บล็อก 5 SLA)</h2>
+    <div class="tw"><table class="t">
+      <tr><th>ช่วง</th><th>visit ที่มีคู่เวลาครบ</th><th>% ของ visit</th><th>เฉลี่ย (นาที)</th><th>สถานะ</th></tr>
+      {% for r in c.sla %}
+      <tr><td>{{ r.label }}</td><td>{{ r.n | n }}</td><td>{{ r.pct }}%</td><td>{{ r.avg if r.avg is not none else '–' }}</td>
+        <td><span class="pill {{ ST[r.status][0] }}">{{ ST[r.status][1] }}</span></td></tr>
+      {% endfor %}
+    </table></div>
+
+    <h2>3. คอลัมน์เวลาทั้งหมดใน service_time</h2>
+    <div class="tw"><table class="t dense">
+      <tr><th>คอลัมน์</th><th>มีข้อมูล</th><th>หลังลงทะเบียนเฉลี่ย</th><th>กดจากจุดบริการ (มากสุด 3 อันดับ)</th><th>แดชบอร์ดใช้เป็น</th></tr>
+      {% for x in c.cols if x.n %}
+      <tr><td><code>{{ x.col }}</code></td><td>{{ x.pct }}%</td>
+        <td>{{ (x.after ~ ' นาที') if x.after is not none else '–' }}</td>
+        <td>{% for d in x.deps %}{{ d.name }}{% if d.group %} <small>[{{ d.group }}]</small>{% endif %} <small>{{ d.pct | int }}%</small>{% if not loop.last %} · {% endif %}{% endfor %}</td>
+        <td>{% for s in c.steps if s.phys == x.col %}{{ s.meaning }}{% else %}<small>ไม่ได้ใช้</small>{% endfor %}</td></tr>
+      {% endfor %}
+    </table></div>
+    <p class="note">คอลัมน์ที่ไม่มีข้อมูลเลยไม่แสดง · [กลุ่ม] = กลุ่มแผนกที่จัดจากชื่อแผนก (แก้ได้ด้วย OPD_DEP_MAP)</p>
+
+    <h2>4. ตารางเวลาอื่นของ HOSxP</h2>
+    <div class="tw"><table class="t">
+      <tr><th>ตาราง</th><th>เนื้อหา</th><th>จำนวน visit</th><th>% ของ visit</th></tr>
+      {% for o in c.others %}
+      <tr><td><code>{{ o.table }}</code></td><td>{{ o.label }}</td>
+        {% if o.error %}<td colspan="2">ไม่มีตารางนี้ / อ่านไม่ได้</td>
+        {% else %}<td>{{ o.v | n }}</td><td>{{ (o.pct ~ '%') if o.pct is not none else '–' }}
+          {% if o.acc is defined %}<br><small>มีเวลารับคิว {{ o.acc }}%</small>{% endif %}</td>{% endif %}</tr>
+      {% endfor %}
+    </table></div>
+    <p class="note">แดชบอร์ดเวอร์ชันนี้คิดเวลารอจาก service_time เท่านั้น ตารางอื่นแสดงไว้ประกอบการตัดสินใจ</p>
+
+    <h2>วิธีตั้งค่า</h2>
+    <ol>
+      <li>ดูตารางที่ 3 ว่าจุดบริการแต่ละจุดกดเวลาลงคอลัมน์ไหน</li>
+      <li>เพิ่มใน <code>.env</code> เช่น <code>OPD_ST_MAP=screen:service1,screen_end:service2</code>
+        (<code>none</code> = ไม่มีขั้นนี้ เช่น <code>send:none</code>)</li>
+      <li>รีสตาร์ตแอป แล้วเปิดหน้านี้อีกครั้ง — ขั้นที่ตั้งค่าแล้วจะมีคำว่า “กำหนดเอง”</li>
+    </ol>
+  </div>
+
+  {% include "_footer.html" %}
+</div>
+</body>
+</html>

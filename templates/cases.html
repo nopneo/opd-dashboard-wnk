@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>รายเคส OPD — {{ hospital }}</title>
+{% include "_icons.html" %}
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="sub-page">
+<div class="sheet">
+
+  <div class="page-h">
+    <a class="back" href="{{ url_for('dashboard', d1=d1, d2=d2) }}">‹ กลับแดชบอร์ด</a>
+    <div>
+      <div class="ttl">ดูรายเคส (Drill down)</div>
+      <div class="sub">{{ hospital }} · {{ period }}</div>
+    </div>
+    <a class="help-link" href="{{ url_for('help_page') }}#cases">ℹ คู่มือ</a>
+  </div>
+
+  <form class="filters" method="get" action="{{ url_for('cases_page') }}">
+    <label>ตั้งแต่ <input type="date" name="d1" value="{{ d1 }}" required></label>
+    <label>ถึง <input type="date" name="d2" value="{{ d2 }}" required></label>
+    <label>แผนก
+      <select name="dep">
+        <option value="">ทุกแผนก</option>
+        {% for x in depts %}
+        <option value="{{ x.dep }}" {{ 'selected' if x.dep == dep }}>{{ x.name }} ({{ x.n | n }})</option>
+        {% endfor %}
+      </select></label>
+    <label>เรียงตามขั้น
+      <select name="step">
+        <option value="">เวลามาถึง</option>
+        {% for s in c.steps %}
+        <option value="{{ loop.index0 }}" {{ 'selected' if step == loop.index0 }}>{{ s.label }} (รอนานสุดก่อน)</option>
+        {% endfor %}
+      </select></label>
+    <label class="chk"><input type="checkbox" name="over" value="1" {{ 'checked' if over }}> เฉพาะที่เกินเป้า</label>
+    <button type="submit">⟳ แสดง</button>
+  </form>
+  {% if warn %}<div class="warn">⚠ {{ warn }}</div>{% endif %}
+
+  <section class="block">
+    <header><span class="t">รายการ visit</span>
+      <input class="search" type="search" placeholder="🔍 ค้นหา (แผนก สิทธิ เวลา…)"
+             data-search="#cases" data-count="#count" aria-label="ค้นหาในตาราง">
+      <span class="count" id="count"></span>
+    </header>
+    <div class="body scroll-x">
+      {% if c.rows %}
+      <table class="t sortable dense" id="cases">
+        <tr>
+          {% if show_hn %}<th>HN</th>{% endif %}
+          {% if d1 != d2 %}<th>วันที่</th>{% endif %}
+          <th>มาถึง</th><th class="l">แผนก</th><th class="l">สิทธิ</th><th class="l">ประเภท</th>
+          {% for s in c.steps %}<th title="เป้าหมาย ≤ {{ s.target }} นาที">{{ s.label }}<small>≤{{ s.target }}</small></th>{% endfor %}
+          <th>เวลารวม<small>≤{{ t_total }}</small></th>
+        </tr>
+        {% for r in c.rows %}
+        <tr>
+          {% if show_hn %}<td>{{ r.hn }}</td>{% endif %}
+          {% if d1 != d2 %}<td>{{ r.d }}</td>{% endif %}
+          <td>{{ r.t }}</td>
+          <td class="l">{{ r.dname }}</td>
+          <td class="l wrap">{{ r.right }}</td>
+          <td class="l">{{ 'นัด' if r.appt else 'Walk-in' }}{% if r.adm %} · Admit{% endif %}</td>
+          {% for g in r.g %}
+          {% set tg = c.steps[loop.index0].target %}
+          <td class="{{ 'bad' if g is not none and g > tg }}" data-v="{{ g if g is not none else '' }}">{{ g if g is not none else '–' }}</td>
+          {% endfor %}
+          <td class="{{ 'bad' if r.tt is not none and r.tt > t_total }}" data-v="{{ r.tt if r.tt is not none else '' }}">{{ r.tt if r.tt is not none else '–' }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% else %}
+      <div class="empty">ไม่พบ visit ตามเงื่อนไขที่เลือก</div>
+      {% endif %}
+      <div class="note">หน่วย: นาที · ตัวแดง = เกินเป้าหมาย · “–” = ไม่มีบันทึกเวลาขั้นนั้น หรือค่าผิดปกติ (ติดลบ/เกิน 6 ชม.) ·
+        คลิกหัวคอลัมน์เพื่อเรียงลำดับ
+        {% if c.truncated %}<br><b>แสดง {{ c.limit | n }} รายการแรก</b> — เลือกแผนกหรือช่วงวันที่ให้แคบลงเพื่อดูครบ{% endif %}
+        {% if not show_hn %}<br>🔒 ไม่แสดง HN เมื่อเปิดผ่านอินเทอร์เน็ต — เปิดจากเครื่องในโรงพยาบาลโดยตรงเพื่อดู HN{% endif %}</div>
+    </div>
+  </section>
+
+  {% include "_footer.html" %}
+</div>
+<script src="{{ url_for('static', filename='table.js') }}"></script>
+</body>
+</html>
