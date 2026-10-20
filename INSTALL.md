@@ -30,7 +30,7 @@ GRANT SELECT ON hos.* TO 'opd_ro'@'<IP เซิร์ฟเวอร์แอ�
 ## 2. ติดตั้งบน Linux
 
 ```bash
-sudo unzip opd_dashboard-1.2.1.zip -d /opt && cd /opt/opd_dashboard
+sudo unzip opd_dashboard-1.2.2.zip -d /opt && cd /opt/opd_dashboard
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env && chmod 600 .env
@@ -84,6 +84,9 @@ copy .env.example .env      &REM แก้ค่า DB_ ใน .env ด้วย
 | `OPD_TARGET_TOTAL`, `OPD_TARGET_PEAK`, `OPD_TARGET_LAB_TAT` | เป้าหมาย |
 | `OPD_SHOW_HN` | `lan` (ค่าเริ่มต้น) แสดง HN ในหน้ารายเคสเฉพาะเครื่องในเครือข่ายที่ต่อตรง · `off` ไม่แสดงเลย |
 | `OPD_FLOW_REMOTE_DEPS` | แผนกที่ผู้ป่วยไม่ได้อยู่ใน รพ. (ไม่วาดในผัง Flow 3D) ค่าเริ่มต้น = แผนก Telemed · `none` = วาดทุกคน |
+| `OPD_MAX_DAYS` | ช่วงวันที่ยาวสุดที่ดึงได้ต่อครั้ง (ค่าเริ่มต้น 366) — กันฐานข้อมูล HOSxP ช้าจากการดึงหลายปี |
+| `OPD_DB_TIMEOUT` | เวลาสูงสุดต่อคำสั่ง SQL เป็นวินาที (ค่าเริ่มต้น 60) |
+| `OPD_LOG_PARAMS` | `1` = บันทึกชื่อพารามิเตอร์ที่แอปไม่รู้จักลง log (ใช้ตรวจ add-on ของ HOSxP · ค่าเริ่มต้นปิด) |
 
 โลโก้โรงพยาบาล: วางไฟล์ PNG สี่เหลี่ยมจัตุรัสที่ `static/img/hospital_logo.png` แล้วรีสตาร์ตแอป
 

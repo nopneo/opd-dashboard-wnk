@@ -1,6 +1,6 @@
 # OPD Dashboard — แดชบอร์ดบริหารจัดการผู้ป่วยนอก (รพ.วังน้ำเขียว)
 
-> **เวอร์ชัน 1.2.1** — ใช้ได้ทุกโรงพยาบาลที่ใช้ HOSxP · **ดาวน์โหลดชุดติดตั้ง: [Releases](https://github.com/nopneo/opd-dashboard-wnk/releases/latest)** ·
+> **เวอร์ชัน 1.2.2** — ใช้ได้ทุกโรงพยาบาลที่ใช้ HOSxP · **ดาวน์โหลดชุดติดตั้ง: [Releases](https://github.com/nopneo/opd-dashboard-wnk/releases/latest)** ·
 > ติดตั้งสำหรับ รพ.อื่น: [INSTALL.md](INSTALL.md) ·
 > สร้างชุดติดตั้ง `python build_dist.py` → `dist/opd_dashboard-<เวอร์ชัน>.zip` · การเปลี่ยนแปลง: [CHANGELOG.md](CHANGELOG.md)
 > ไฟล์นี้บันทึกรายละเอียดการติดตั้งที่ รพ.วังน้ำเขียว (ผู้พัฒนา)
@@ -13,7 +13,7 @@
 
 ```bash
 pip install -r requirements.txt
-python app.py                 # http://127.0.0.1:5900/   (ดีฟอลต์ = วันนี้)
+python app.py                 # http://127.0.0.1:5900/   (ดีฟอลต์ = วันนี้ · debug ปิด เปิดด้วย FLASK_DEBUG=1)
 python render.py --d1 2026-10-01 --d2 2026-10-15 --fmt jpg
 ```
 
@@ -150,7 +150,11 @@ KPI ช่อง 6 = % จบบริการภายใน 2 ชม., บล
 - `db.py` โหมด ssh ใส่ `stdin=DEVNULL` + `BatchMode` ไม่งั้น ssh ของ Windows ค้างเมื่อรันใต้ dev server ที่ไม่มี console
 - `render.py` สตาร์ตแอปด้วย `FLASK_DEBUG=0` เพื่อไม่ให้ reloader ทิ้งโปรเซสลูกค้างไว้
 - `render.py` เปิดหน้าต่างสูง 4800 px แล้วตัดพื้นหลังส่วนเกิน (หน้ายาวขึ้นหลังเพิ่มบล็อก 11–15 และ 17)
-- แคชผลลัพธ์ 120 วินาที (`OPD_CACHE_TTL`, 0 = ปิด) · พอร์ต **5900**
+- แคชผลลัพธ์ 120 วินาที (`OPD_CACHE_TTL`, 0 = ปิด) เก็บสูงสุด 32 ช่วงวันที่ต่อ worker (`cache.py`) · พอร์ต **5900**
+- ค่าที่ผู้ใช้กรอก (วันที่ รหัสแผนก) ส่งเข้า SQL เป็นพารามิเตอร์เสมอ `fetch(sql, {"d1": d1})` — `%` ที่เป็นตัวอักษรใน SQL ต้องเขียน `%%`
+- ดึงข้อมูลได้ไม่เกิน 366 วันต่อครั้ง (`OPD_MAX_DAYS`) · คำสั่ง SQL ถูกตัดเมื่อเกิน 60 วินาที (`OPD_DB_TIMEOUT`)
+- `FLASK_DEBUG=1` เปิด debugger และฟังแค่ 127.0.0.1 — อย่าเปิดบนเครื่องที่ผู้ใช้เข้าถึงได้
+- ทดสอบ: `pip install -r requirements-dev.txt && python -m pytest` (ไม่ต้องต่อฐานข้อมูล)
 
 ## ใช้งานจริงที่ รพ.วังน้ำเขียว
 

@@ -77,4 +77,6 @@ def _derived():
 #: ใช้แทนชื่อตาราง service_time ในทุกคำสั่ง SQL: f"from {stmap.TABLE} s"
 TABLE = _derived() if MAP else "service_time"
 
-assert all(re.fullmatch(r"service\d{1,2}|none", v) for v in MAP.values())
+# ชื่อคอลัมน์ถูกต่อเข้า SQL ตรง ๆ — ตรวจซ้ำอีกชั้น (ไม่ใช้ assert เพราะ python -O จะตัดทิ้ง)
+if not all(re.fullmatch(r"service\d{1,2}|none", v) for v in MAP.values()):
+    raise ValueError(f"OPD_ST_MAP มีชื่อคอลัมน์ไม่ถูกต้อง: {MAP}")

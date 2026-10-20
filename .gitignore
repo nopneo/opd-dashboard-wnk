@@ -18,3 +18,4 @@ docs/brand/wnk_logo_source.jpg
 /ผัง.jpg
 flow_layout.json
 .venv/
+.pytest_cache/

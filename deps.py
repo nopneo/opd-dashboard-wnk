@@ -58,7 +58,7 @@ def _overrides():
 
 
 def _load():
-    if time.time() - _cache["t"] < _TTL and _cache["deps"]:
+    if _cache["t"] and time.time() - _cache["t"] < _TTL:     # โหลดแล้ว (แม้ไม่มีแผนกเลย)
         return
     rows = fetch("select depcode, department from kskdepartment")
     deps = {r["depcode"]: {"name": r["department"] or "", "group": classify(r["department"])}
