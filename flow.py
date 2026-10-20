@@ -18,6 +18,7 @@ from datetime import date
 
 import deps
 import stmap
+from cache import TTLCache
 from db import fetch, num
 from queries import MAX_TOTAL, _thai_date
 
@@ -209,14 +210,14 @@ def _vid(vn):
 #: แคช — วันนี้สั้นตามรอบรีเฟรชหน้าเว็บ, วันก่อน ๆ ข้อมูลนิ่งแล้ว
 TTL_TODAY = int(os.getenv("OPD_FLOW_TTL", "45"))
 TTL_PAST = 3600
-_cache = {}
+_cache = TTLCache(maxsize=32)
 
 
 def build(d):
     today = date.today().isoformat()
-    hit = _cache.get(d)
-    if hit and time.time() - hit[0] < (TTL_TODAY if d >= today else TTL_PAST):
-        return hit[1]
+    hit = _cache.get(d, TTL_TODAY if d >= today else TTL_PAST)
+    if hit is not None:
+        return hit
 
     rows = fetch(f"""
         select o.vn, {_min('ifnull(s.vsttime, o.vsttime)')} reg,
@@ -237,7 +238,7 @@ def build(d):
             where l.vn = o.vn and l.receive_date = o.vstdate) lr
         from ovst o left join {stmap.TABLE} s on s.vn = o.vn
           left join patient p on p.hn = o.hn
-        where o.vstdate = '{d}'""")
+        where o.vstdate = %(d)s""", {"d": d})
 
     remote_deps = _remote_deps()
     visits, remote, admitted = [], [], 0
@@ -279,5 +280,5 @@ def build(d):
         "remote": sorted(remote),
         "generated": time.strftime("%H:%M:%S"),
     }
-    _cache[d] = (time.time(), data)
+    _cache.set(d, data)
     return data

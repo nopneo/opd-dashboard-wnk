@@ -47,15 +47,15 @@ def _columns(d1, d2):
     r = fetch_one(f"""
         select count(*) visits, sum(s.vn is not null) st_rows, {', '.join(cols)}
         from ovst o left join service_time s on s.vn = o.vn
-        where o.vstdate between '{d1}' and '{d2}'""") or {}
+        where o.vstdate between %(d1)s and %(d2)s""", {"d1": d1, "d2": d2}) or {}
     visits = num(r.get("visits"))
 
     union = " union all ".join(
         f"select '{c}' c, s.{c}_dep dep, count(*) n from service_time s "
-        f"where s.vstdate between '{d1}' and '{d2}' and s.{c} is not null group by s.{c}_dep"
+        f"where s.vstdate between %(d1)s and %(d2)s and s.{c} is not null group by s.{c}_dep"
         for c in stmap.ALL)
     by = {}
-    for row in fetch(union):
+    for row in fetch(union, {"d1": d1, "d2": d2}):
         by.setdefault(row["c"], []).append((num(row["n"]), row["dep"] or ""))
 
     used = {stmap.phys(c): c for c in stmap.STD if stmap.phys(c)}
@@ -99,22 +99,22 @@ def _other_sources(d1, d2, visits):
     checks = [
         ("opd_dep_queue", "คิวรายหน่วยบริการ (เวลาเข้าคิว / รับคิว / เสร็จ)",
          f"""select count(distinct vn) v, sum(accept_datetime is not null) acc, count(*) n
-             from opd_dep_queue where queue_datetime >= '{d1}' and queue_datetime < '{d2}' + interval 1 day"""),
+             from opd_dep_queue where queue_datetime >= %(d1)s and queue_datetime < %(d2)s + interval 1 day"""),
         ("ovst_service_time", "ระยะเวลาให้บริการรายขั้น (OPD-SCREEN, OPD-DOCTOR …)",
          f"""select count(distinct vn) v, count(*) n from ovst_service_time
-             where service_date between '{d1}' and '{d2}'"""),
+             where service_date between %(d1)s and %(d2)s"""),
         ("lab_head", "เวลาสั่ง / รับ / รายงานผล Lab",
-         f"select count(distinct vn) v, count(*) n from lab_head where order_date between '{d1}' and '{d2}'"),
+         f"select count(distinct vn) v, count(*) n from lab_head where order_date between %(d1)s and %(d2)s"),
         ("er_regist", "เวลาเข้าห้องฉุกเฉิน",
          f"""select count(distinct vn) v, count(*) n from er_regist
-             where enter_er_time >= '{d1}' and enter_er_time < '{d2}' + interval 1 day"""),
+             where enter_er_time >= %(d1)s and enter_er_time < %(d2)s + interval 1 day"""),
         ("oapp", "นัดหมาย",
-         f"select count(*) v, count(*) n from oapp where nextdate between '{d1}' and '{d2}'"),
+         f"select count(*) v, count(*) n from oapp where nextdate between %(d1)s and %(d2)s"),
     ]
     out = []
     for table, label, sql in checks:
         try:
-            r = fetch_one(sql) or {}
+            r = fetch_one(sql, {"d1": d1, "d2": d2}) or {}
             v = num(r.get("v"))
             row = {"table": table, "label": label, "v": v, "n": num(r.get("n")),
                    "pct": queries._pct(v, visits) if table != "oapp" else None}

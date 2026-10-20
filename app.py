@@ -10,15 +10,22 @@ import os
 import re
 import tempfile
 import threading
+import time
 import urllib.parse
 from datetime import date, timedelta
 from io import BytesIO
+
+try:
+    import fcntl                # Linux/macOS — ล็อกไฟล์ข้ามโปรเซส (gunicorn หลาย worker)
+except ImportError:             # Windows รันด้วย waitress โปรเซสเดียว ใช้ threading.Lock พอ
+    fcntl = None
 
 from flask import (Flask, jsonify, render_template, request, send_file,
                    url_for)
 
 import charts
 import check
+import db
 import deps
 import flow
 import queries
@@ -53,7 +60,7 @@ app = Flask(__name__)
 app.wsgi_app = PrefixMiddleware(app.wsgi_app)
 app.jinja_env.globals.update(smooth_path=charts.smooth_path, nice_max=charts.nice_max)
 #: เวอร์ชันของแอป — แสดงที่ท้ายหน้าและคู่มือ (ประวัติการแก้ไขอยู่ใน CHANGELOG.md)
-VERSION = "1.2.1"
+VERSION = "1.2.2"
 #: ผู้พัฒนา — แสดงท้ายทุกหน้าและในคู่มือ (ทุกโรงพยาบาลที่ติดตั้ง) แก้ทับได้ด้วย env OPD_DEV_CONTACT
 DEV_CONTACT = "นายเผด็จชัย สิงหล โรงพยาบาลวังน้ำเขียว โทร 086-257-4817"
 #: เปลี่ยนเลขนี้ทุกครั้งที่เปลี่ยนไอคอน — บังคับ Safari/Chrome โหลดไอคอนหน้าจอโฮมใหม่
@@ -81,6 +88,12 @@ def _branding():
     }
 
 
+@app.teardown_appcontext
+def _close_db(_exc):
+    """คืน connection ของ request นี้ (db.py ใช้ connection เดียวทุกคำสั่งใน request)"""
+    db.close()
+
+
 app.jinja_env.filters["n"] = lambda v: f"{v:,}" if isinstance(v, (int, float)) else v
 
 
@@ -102,9 +115,9 @@ def _log_unknown_params():
     """บันทึก "ชื่อ" พารามิเตอร์/header/cookie ที่แอปไม่รู้จัก เพื่อดูว่า HOSxP ส่งอะไรมาตอนเปิด add-on
 
     บันทึกเฉพาะชื่อและความยาวของค่า — ไม่บันทึกค่าเด็ดขาด (อาจเป็น session id / token)
-    ปิดได้ด้วย env OPD_LOG_PARAMS=0
+    ใช้ตอนตรวจสอบ add-on เท่านั้น: เปิดด้วย env OPD_LOG_PARAMS=1 (ค่าเริ่มต้นปิด ไม่ให้ log รก)
     """
-    if os.getenv("OPD_LOG_PARAMS", "1") == "0" or request.path.startswith("/static/"):
+    if os.getenv("OPD_LOG_PARAMS", "0") != "1" or request.path.startswith("/static/"):
         return
     args = {k: len(v) for k, v in request.args.items() if k not in _KNOWN_ARGS}
     form = {k: len(v) for k, v in request.form.items()} if request.method == "POST" else {}
@@ -144,6 +157,11 @@ def _iso(v, default):
     return d.isoformat() if d else default
 
 
+#: ช่วงวันที่ยาวสุดที่ดึงได้ต่อครั้ง — กันการดึงหลายปีจนฐานข้อมูล HOSxP ช้าทั้งโรงพยาบาล
+#: (แต่ละหน้ายิงราว 20 คำสั่ง และเทียบช่วงก่อนหน้าที่ยาวเท่ากันอีกรอบ)
+MAX_DAYS = int(os.getenv("OPD_MAX_DAYS", "366"))
+
+
 def _params():
     """(d1, d2, ข้อความเตือน) — กรอกผิดรูปแบบจะแจ้งเตือน ไม่เงียบแล้วกลับไปวันนี้"""
     today = date.today().isoformat()
@@ -161,6 +179,9 @@ def _params():
         d1, d2 = min(d1, today), min(d2, today)
     if d1 > d2:
         d1, d2 = d2, d1
+    if (date.fromisoformat(d2) - date.fromisoformat(d1)).days >= MAX_DAYS:
+        d1 = (date.fromisoformat(d2) - timedelta(days=MAX_DAYS - 1)).isoformat()
+        warn.append(f"เลือกได้ไม่เกิน {MAX_DAYS} วันต่อครั้ง — แสดง {MAX_DAYS} วันสุดท้ายของช่วงที่เลือก")
     return d1, d2, " · ".join(warn)
 
 
@@ -207,7 +228,7 @@ def cases_page():
     over = request.args.get("over") == "1"
     hn = _hn_allowed()
     data = queries.cases(d1, d2, dep or None, step, over, with_hn=hn)
-    depts = queries.build(d1, d2)["dept_table"]
+    depts = queries.dept_table(d1, d2)
     return render_template("cases.html", d1=d1, d2=d2, dep=dep, step=step, over=over, warn=warn,
                            c=data, depts=depts, show_hn=hn, t_total=queries.TARGET_TOTAL,
                            period=queries._thai_range(d1, d2))
@@ -297,8 +318,45 @@ def api_flow():
     return jsonify(flow.build(d))
 
 
-# เรนเดอร์ทีละงานเท่านั้น — chromium กินแรมสูง และมี gunicorn แค่ 3 worker
-_render_lock = threading.Lock()
+class _RenderLock:
+    """เรนเดอร์ทีละงานทั้งเครื่อง — chromium กินแรมสูง
+
+    gunicorn มีหลาย worker (คนละโปรเซส) threading.Lock กันได้แค่ในโปรเซสเดียว จึงล็อกไฟล์เพิ่มด้วย
+    """
+
+    def __init__(self, path):
+        self._path = path
+        self._thread = threading.Lock()
+        self._fd = None
+
+    def acquire(self, timeout):
+        deadline = time.monotonic() + timeout
+        if not self._thread.acquire(timeout=timeout):
+            return False
+        if fcntl is None:
+            return True
+        fd = os.open(self._path, os.O_CREAT | os.O_RDWR, 0o600)
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self._fd = fd
+                return True
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    os.close(fd)
+                    self._thread.release()
+                    return False
+                time.sleep(0.5)
+
+    def release(self):
+        if self._fd is not None:
+            fd, self._fd = self._fd, None
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        self._thread.release()
+
+
+_render_lock = _RenderLock(os.path.join(tempfile.gettempdir(), "opd_dashboard_render.lock"))
 
 MIME = {"png": "image/png", "jpg": "image/jpeg", "pdf": "application/pdf"}
 
@@ -371,6 +429,8 @@ def healthz():
 
 
 if __name__ == "__main__":
-    # render.py สตาร์ตแอปด้วย FLASK_DEBUG=0 — ถ้าเปิด reloader ไว้ โปรเซสลูกจะค้างหลัง render.py ปิดตัวแม่
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "5900")),
-            debug=os.getenv("FLASK_DEBUG", "1") != "0")
+    # debug ปิดเป็นค่าเริ่มต้น — ตัว debugger ของ Werkzeug สั่งรันโค้ดบนเครื่องได้
+    # เปิดด้วย FLASK_DEBUG=1 เฉพาะตอนพัฒนา และจะฟังแค่ 127.0.0.1 (เครื่องอื่นใน LAN เข้าไม่ได้)
+    debug = os.getenv("FLASK_DEBUG", "0") == "1"
+    app.run(host="127.0.0.1" if debug else os.getenv("OPD_HOST", "0.0.0.0"),
+            port=int(os.getenv("PORT", "5900")), debug=debug)

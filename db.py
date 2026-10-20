@@ -6,11 +6,15 @@
 
 เลือกโหมดด้วย env `OPD_DB_MODE` (default: direct · ssh เมื่อตั้ง OPD_SSH_HOST และไม่มี DB_PASS)
 ข้อมูลใน HOSxP เก็บเป็น tis-620 จึงต้องระบุ charset ให้ถูกทั้งสองทาง
+
+ค่าที่มาจากผู้ใช้ (วันที่ รหัสแผนก ฯลฯ) ส่งเป็นพารามิเตอร์เสมอ: fetch("... where d = %(d1)s", {"d1": d1})
+เมื่อส่งพารามิเตอร์ เครื่องหมาย % ที่เป็นตัวอักษรใน SQL ต้องเขียนเป็น %% (เช่น time_format(x, '%%H:%%i'))
 """
 
 import os
 import shlex
 import subprocess
+import threading
 from decimal import Decimal
 
 try:
@@ -26,14 +30,23 @@ DB_NAME = os.getenv("DB_NAME", "hos")
 DB_USER = os.getenv("DB_USER", "")
 DB_PASS = os.getenv("DB_PASS", "")
 SSH_HOST = os.getenv("OPD_SSH_HOST", "")
+#: เวลาสูงสุดต่อคำสั่ง SQL (วินาที) — กัน query ค้างจนกิน worker และภาระของ DB HOSxP
+QUERY_TIMEOUT = int(os.getenv("OPD_DB_TIMEOUT", "60"))
 
 #: ปกติใช้ direct · โหมด ssh ใช้ตอนพัฒนาบนเครื่องที่ไม่มีรหัส DB (ต้องตั้ง OPD_SSH_HOST)
 MODE = os.getenv("OPD_DB_MODE") or ("ssh" if SSH_HOST and not DB_PASS else "direct")
 
 
-def _fetch_direct(sql):
+#: connection ต่อเธรด — ใช้ซ้ำทุกคำสั่งใน request เดียวกัน แล้ว app ปิดตอนจบ request (close())
+_local = threading.local()
+
+
+def _conn():
     import pymysql
 
+    conn = getattr(_local, "conn", None)
+    if conn is not None:
+        return conn
     conn = pymysql.connect(
         host=DB_HOST,
         port=DB_PORT,
@@ -42,20 +55,59 @@ def _fetch_direct(sql):
         database=DB_NAME,
         charset="tis620",
         cursorclass=pymysql.cursors.DictCursor,
+        connect_timeout=10,
+        read_timeout=QUERY_TIMEOUT + 5,
     )
+    # ให้ MariaDB หยุด query เองเมื่อเกินเวลา (read_timeout ตัดแค่ฝั่ง client, query ยังรันต่อใน DB)
+    # MySQL ไม่มีตัวแปรนี้ — ข้ามได้ ยังมี read_timeout กันอยู่
     try:
         with conn.cursor() as cur:
-            cur.execute(sql)
+            cur.execute(f"set session max_statement_time = {QUERY_TIMEOUT:d}")
+    except pymysql.MySQLError:
+        pass
+    _local.conn = conn
+    return conn
+
+
+def close():
+    """ปิด connection ของเธรดนี้ (app เรียกตอนจบทุก request)"""
+    conn = getattr(_local, "conn", None)
+    _local.conn = None
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _fetch_direct(sql, args):
+    conn = _conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql, args)
             return cur.fetchall()
-    finally:
-        conn.close()
+    except Exception:
+        close()                 # connection อาจเสีย/หมดเวลา — คำสั่งถัดไปเปิดใหม่
+        raise
 
 
-def _fetch_ssh(sql):
+def _bind(sql, args):
+    """แทนพารามิเตอร์ลง SQL สำหรับโหมด ssh — escape แบบเดียวกับ pymysql"""
+    if args is None:
+        return sql
+    from pymysql.converters import escape_item
+
+    if isinstance(args, dict):
+        return sql % {k: escape_item(v, "utf8") for k, v in args.items()}
+    return sql % tuple(escape_item(v, "utf8") for v in args)
+
+
+def _fetch_ssh(sql, args):
     """รันผ่าน ssh แล้วแปลง TSV กลับเป็น list[dict]
 
     mariadb client ส่ง \\t \\n \\\\ แบบ escape มาใน batch mode จึงต้อง unescape กลับ
     """
+    sql = _bind(sql, args)
     # ssh รวม argv เป็นสตริงเดียวแล้วให้ remote shell ตีความ จึงต้อง quote ให้เอง
     remote = (
         "mariadb --default-character-set=tis620 --batch --raw "
@@ -84,13 +136,13 @@ def _fetch_ssh(sql):
     return rows
 
 
-def fetch(sql):
-    rows = _fetch_direct(sql) if MODE == "direct" else _fetch_ssh(sql)
+def fetch(sql, args=None):
+    rows = _fetch_direct(sql, args) if MODE == "direct" else _fetch_ssh(sql, args)
     return [{k: _clean(v) for k, v in r.items()} for r in rows]
 
 
-def fetch_one(sql):
-    rows = fetch(sql)
+def fetch_one(sql, args=None):
+    rows = fetch(sql, args)
     return rows[0] if rows else {}
 
 
