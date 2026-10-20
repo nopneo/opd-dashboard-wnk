@@ -10,7 +10,7 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 FILES = ["app.py", "db.py", "deps.py", "queries.py", "flow.py", "charts.py", "render.py", "check.py", "stmap.py",
          "requirements.txt", ".env.example", "INSTALL.md", "CHANGELOG.md", "flow_layout.example.json",
-         "LICENSE"]
+         "LICENSE", "NOTICE.md"]
 #: คู่มือฉบับพิมพ์ — ดาวน์โหลดจาก /help.pdf ของแอป (ตั้ง OPD_HOSPITAL_NAME เป็นชื่อกลางก่อน) แล้ววางไว้ที่นี่
 MANUAL = os.path.join("docs", "OPD_Dashboard_manual.pdf")
 DIRS = ["templates", "static"]
