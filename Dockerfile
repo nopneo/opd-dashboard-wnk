@@ -9,6 +9,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     OPD_DB_MODE=bms \
     # วันที่ "วันนี้" ต้องเป็นเวลาไทย (container เป็น UTC) — ใช้รูปแบบ POSIX ไม่ต้องลง tzdata
     TZ=ICT-7 \
+    # ทุกคำสั่งวิ่งผ่าน HOSxP ของผู้ใช้ไปฐานข้อมูลหลัก (ไม่มี Slave) — แคชนานขึ้นลดภาระ
+    OPD_CACHE_TTL=300 \
+    OPD_FLOW_TTL=120 \
     PORT=8080
 
 WORKDIR /app

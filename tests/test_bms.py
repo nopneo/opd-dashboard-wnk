@@ -201,3 +201,37 @@ def test_healthz_needs_no_session(bms):
 def test_session_repr_hides_token():
     s = bms_session.Session("id", TUNNEL["A"], "secret-token", "1", "mariadb", time.time())
     assert "secret-token" not in repr(s)
+
+
+def test_shows_last_data_when_hosxp_is_closed(bms, monkeypatch):
+    """ผู้ใช้ปิด HOSxP/tunnel ล่ม → แสดงข้อมูลล่าสุดพร้อมคำเตือน แทนหน้า error"""
+    monkeypatch.setattr(queries, "CACHE_TTL", 1)
+    c = app_mod.app.test_client()
+    c.get("/?bms-session-id=sess-aaaa-1111")
+    assert c.get("/?d1=2026-10-01&d2=2026-10-01").status_code == 200
+    time.sleep(1.1)                                                  # แคชหมดอายุ
+
+    def down(url, body):
+        raise AssertionError("ไม่ควรถูกเรียก")
+
+    bms.sql_reply = lambda url, body: {"MessageCode": 500, "Message": "connection refused"}
+    r = c.get("/?d1=2026-10-01&d2=2026-10-01")
+    assert r.status_code == 200 and "แสดงข้อมูลล่าสุดเมื่อ" in r.get_data(as_text=True)
+
+
+def test_expired_session_is_not_hidden_by_stale_data(bms, monkeypatch):
+    monkeypatch.setattr(queries, "CACHE_TTL", 1)
+    c = app_mod.app.test_client()
+    c.get("/?bms-session-id=sess-aaaa-1111")
+    c.get("/?d1=2026-10-01&d2=2026-10-01")
+    time.sleep(1.1)
+    bms.sql_status = 501
+    assert c.get("/?d1=2026-10-01&d2=2026-10-01").status_code == 401
+
+
+def test_check_page_keeps_each_query_within_20_tables(bms):
+    c = app_mod.app.test_client()
+    c.get("/?bms-session-id=sess-aaaa-1111")
+    assert c.get("/check").status_code == 200
+    for _, _, body in bms.sql_calls:
+        assert body["sql"].lower().count("service_time") + body["sql"].lower().count(" ovst ") <= 20

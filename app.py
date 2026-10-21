@@ -197,7 +197,10 @@ def dashboard():
     ranges = [("วันนี้", t, t), ("7 วันล่าสุด", t - timedelta(days=6), t),
               ("เดือนนี้", first, t), ("เดือนก่อน", prev_end.replace(day=1), prev_end)]
     ranges = [(lbl, a.isoformat(), b.isoformat()) for lbl, a, b in ranges]
-    return render_template("dashboard.html", d=queries.build(d1, d2), warn=warn, ranges=ranges,
+    d = queries.build(d1, d2)
+    if d.get("stale_since"):
+        warn = " · ".join(x for x in (warn, f"เชื่อมต่อ HOSxP ไม่ได้ — แสดงข้อมูลล่าสุดเมื่อ {d['stale_since']}") if x)
+    return render_template("dashboard.html", d=d, warn=warn, ranges=ranges,
                            print_mode=request.args.get("print") == "1")
 
 

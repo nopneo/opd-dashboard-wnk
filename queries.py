@@ -22,6 +22,7 @@
 """
 
 import os
+import sys
 from datetime import date, datetime, timedelta
 
 import deps
@@ -816,7 +817,20 @@ def build(d1=None, d2=None):
         hit = _cache.get(key, CACHE_TTL)
         if hit is not None:
             return hit
+    try:
+        return _build(key, d1, d2)
+    except Exception:
+        # โหมด bms: HOSxP ของผู้ใช้ปิด/รีสตาร์ต หรือ tunnel ล่ม → แสดงข้อมูลล่าสุดที่เคยดึงได้แทนหน้า error
+        # (session หมดอายุไม่นับ — ต้องให้ผู้ใช้เปิดใหม่จาก HOSxP)
+        import bms_session
 
+        stale = _cache.get_stale(key)
+        if not stale or db_tenant() == "" or isinstance(sys.exc_info()[1], bms_session.SessionError):
+            raise
+        return dict(stale[1], stale_since=stale[1]["generated_at"])
+
+
+def _build(key, d1, d2):
     st = service_times(d1, d2)
     kpi = kpi_summary(d1, d2, st)
     days = kpi["period"]["days"]

@@ -56,7 +56,8 @@ def test_ttl_cache_expiry_and_size(monkeypatch):
     assert c.get("b", 60) is None and c.get("a", 60) == 1 and c.get("c", 60) == 3
     now = time.time()
     monkeypatch.setattr(cache.time, "time", lambda: now + 100)
-    assert c.get("a", 60) is None and len(c) == 1
+    assert c.get("a", 60) is None                       # หมดอายุ
+    assert c.get_stale("a")[1] == 1 and len(c) == 2     # แต่ยังเก็บไว้ให้ใช้ตอนแหล่งข้อมูลล่ม (จำกัดด้วย maxsize)
 
 
 def _visit(**kw):
