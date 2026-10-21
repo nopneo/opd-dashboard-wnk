@@ -86,3 +86,25 @@ def test_segments_ignore_bad_times():
 
 def test_segments_no_registration():
     assert flow._segments(_visit(reg=None)) == (None, None)
+
+
+def test_segments_clinic_early_finish_stays_in_clinic():
+    # ทันตกรรมกด "ตรวจเสร็จ" ตอนรับเข้าคิว → ยังอยู่ในคลินิกจนไปจ่ายเงิน แล้วออกตอนส่งกลับบ้าน
+    segs, end = flow._segments(_visit(md="050", reg=458, s3=458, s12=460, s7=546, home=546))
+    assert segs == [(458, "REG"), (458, "DENT"), (546, "CASH")]
+    assert end == 546 + flow.WALK_OUT
+    # ส่งกลับบ้านช้ากว่า HOME_MAX ของ OPD แต่ยังอยู่ในเกณฑ์ของคลินิก
+    _, end = flow._segments(_visit(md="050", reg=458, s3=458, s12=460, home=640))
+    assert end == 640
+
+
+def test_segments_clinic_open_visit_today():
+    # วันนี้ยังไม่ส่งกลับบ้าน (แผนกปัจจุบัน = ทันตกรรม) → ยังนั่งรอในคลินิก
+    v = _visit(md="050", cd="050", reg=444, s3=444, s12=445)
+    segs, end = flow._segments(v, now=510)
+    assert segs[-1][1] == "DENT" and end == 510 + flow.OPEN_AHEAD
+    assert flow._segments(v, now=900)[1] == 444 + flow.CLINIC_OPEN_MAX   # ลืมส่งกลับบ้าน
+    assert flow._segments(v)[1] == 445 + flow.LINGER["DENT"]            # วันก่อน ๆ
+    # OPD ทั่วไปไม่ยืดเวลา
+    v = _visit(md="010", cd="010", reg=444, s11=450)
+    assert flow._segments(v, now=600)[1] == 450 + flow.LINGER["DRW"]

@@ -86,6 +86,18 @@ HOME_MAX = 120
 #: มีส่งกลับบ้านแล้วแต่ขั้นสุดท้ายยังค้าง (เช่น รับใบสั่งยาแล้วไม่ได้กดจ่ายเสร็จ) ให้อยู่ต่อได้ไม่เกินนี้
 HOME_LINGER = 30
 
+#: คลินิกที่ตรวจ/ทำหัตถการในคลินิกเอง — มักกด "ตรวจเสร็จ" (service12) ตั้งแต่รับผู้ป่วยเข้าคิว
+#: (ทันตกรรม รพ.วังน้ำเขียว 77% กดภายใน 10 นาทีหลังลงทะเบียน แล้วผู้ป่วยรอทำฟันอีก ~1.5 ชม.)
+#: จึงให้อยู่ในคลินิกต่อจนถึงขั้นถัดไป/ส่งกลับบ้าน แทนที่จะถือว่าออกไปแล้ว
+CLINICS = {"DENT", "SPEC", "MH", "PT", "TTM"}
+#: ส่งกลับบ้านหลังขั้นสุดท้ายในคลินิกไม่เกินกี่นาที จึงถือเป็นเวลาออกจริง (90% ของทันตกรรม ≤ 186 นาที)
+CLINIC_HOME_MAX = 240
+#: วันนี้: แผนกปัจจุบัน (ovst.cur_dep) ยังเป็นคลินิกนั้น = ยังไม่ส่งกลับบ้าน ให้อยู่ต่อ
+#: นานสุดกี่นาทีนับจากลงทะเบียน (กันลืมกดส่งกลับบ้านแล้วค้างทั้งวัน)
+CLINIC_OPEN_MAX = 300
+#: ยืดเวลาออกเผื่อไว้กี่นาทีหลังเวลาปัจจุบัน (หน้าเว็บโหลดข้อมูลใหม่ทุก ~1 นาที)
+OPEN_AHEAD = 5
+
 
 #: ระดับความเร่งด่วน (สีเสื้อหุ่น) — ER ใช้ระดับคัดแยก er_regist.er_emergency_level_id
 #: ส่วน OPD ใช้ ovst.pt_priority (0 ปกติ, 1 นัด, 2 พระภิกษุ/ผู้พิการ, 3 ผู้สูงอายุ, 4 ฉุกเฉิน)
@@ -114,8 +126,9 @@ def _wait_area(exam_unit):
     return exam_unit
 
 
-def _segments(r):
-    """แถว 1 visit → [(นาทีที่เข้า, จุดบริการ), ...], นาทีที่ออกจาก รพ."""
+def _segments(r, now=None):
+    """แถว 1 visit → [(นาทีที่เข้า, จุดบริการ), ...], นาทีที่ออกจาก รพ.
+    now = นาทีปัจจุบัน (เฉพาะข้อมูลวันนี้) ใช้คงผู้ป่วยคลินิกที่ยังไม่ส่งกลับบ้าน"""
     reg = r["reg"]
     if reg is None:
         return None, None
@@ -164,6 +177,7 @@ def _segments(r):
     if t12 is not None:
         later = {k for t, _, k in ev if t >= t12}
         area["s12"] = ("RX" if later & {"s6", "s16"} else
+                       exam_unit if exam_unit in CLINICS else    # รอในคลินิกจนไปจ่ายเงิน/กลับบ้าน
                        area["s7"] if "s7" in later else None)
 
     segs = []
@@ -183,11 +197,14 @@ def _segments(r):
     # เวลาส่งกลับบ้าน (cur_dep = 999) — ที่ รพ.วังน้ำเขียว มักกดตอนแพทย์ตรวจเสร็จ ก่อนรับยา
     # จึงใช้เป็นเวลาออกเฉพาะเมื่อกดหลังกิจกรรมสุดท้าย ถ้ากดก่อน แปลว่า visit จบแล้ว ไม่ต้องค้างนาน
     home = r.get("home")
+    in_clinic = area[last_k] in CLINICS
     if home is not None and home >= reg:
-        if last_t <= home <= last_t + HOME_MAX:
+        if last_t <= home <= last_t + (CLINIC_HOME_MAX if in_clinic else HOME_MAX):
             end = max(home, last_t + WALK_OUT)
         elif home < last_t and area[last_k] is not None:
             end = min(end, last_t + HOME_LINGER)
+    elif now is not None and in_clinic and deps.group_of(r.get("cd")) == area[last_k]:
+        end = max(end, min(now + OPEN_AHEAD, reg + CLINIC_OPEN_MAX))
     if not segs:
         segs = [(reg, area["reg"])]
     return segs, end
@@ -226,7 +243,7 @@ def build(d):
           {_min('s.service7')} s7, {_min('s.service16')} s16, {_min('s.service20')} s20,
           s.service3_dep d3, s.service4_dep d4, s.service5_dep d5, s.service7_dep d7, s.service12_dep d12,
           s.service20_dep d20, o.main_dep md, o.pt_priority pr, p.sex sex,
-          o.an, o.pt_subtype st,
+          o.an, o.pt_subtype st, o.cur_dep cd,
           case when o.cur_dep = '999' then {_min('o.cur_dep_time')} end home,
           (select {_min('time(min(e.enter_er_time))')} from er_regist e
             where e.vn = o.vn and date(e.enter_er_time) = o.vstdate) er_in,
@@ -241,6 +258,8 @@ def build(d):
         where o.vstdate = %(d)s""", {"d": d})
 
     remote_deps = _remote_deps()
+    lt = time.localtime()
+    now = lt.tm_hour * 60 + lt.tm_min if d == today else None
     visits, remote, admitted = [], [], 0
     for r in rows:
         if r.get("an"):
@@ -260,7 +279,7 @@ def build(d):
             r["er_out"] = r["er_in"] + (ER_OBSERVE if r.get("er_obs") == "Y" else ER_STAY)
         if r["lo"] is not None and r["lr"] is not None and r["lr"] < r["lo"]:
             r["lr"] = None
-        segs, end = _segments(r)
+        segs, end = _segments(r, now)
         if not segs:
             continue
         sex = str(r.get("sex") or "")
