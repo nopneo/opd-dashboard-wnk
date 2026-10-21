@@ -30,7 +30,7 @@ GRANT SELECT ON hos.* TO 'opd_ro'@'<IP เซิร์ฟเวอร์แอ�
 ## 2. ติดตั้งบน Linux
 
 ```bash
-sudo unzip opd_dashboard-1.2.2.zip -d /opt && cd /opt/opd_dashboard
+sudo unzip opd_dashboard-1.2.3.zip -d /opt && cd /opt/opd_dashboard
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env && chmod 600 .env
