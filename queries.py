@@ -28,6 +28,7 @@ import deps
 import stmap
 from cache import TTLCache
 from db import fetch, fetch_one, num
+from db import tenant as db_tenant
 
 # ---------------------------------------------------------------- เกณฑ์
 
@@ -810,7 +811,7 @@ def build(d1=None, d2=None):
     if d1 > d2:
         d1, d2 = d2, d1
 
-    key = (d1, d2)
+    key = (db_tenant(), d1, d2)
     if CACHE_TTL:
         hit = _cache.get(key, CACHE_TTL)
         if hit is not None:

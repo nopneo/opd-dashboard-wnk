@@ -20,9 +20,10 @@ try:
 except ImportError:             # Windows รันด้วย waitress โปรเซสเดียว ใช้ threading.Lock พอ
     fcntl = None
 
-from flask import (Flask, jsonify, render_template, request, send_file,
+from flask import (Flask, jsonify, redirect, render_template, request, send_file,
                    url_for)
 
+import bms_session
 import charts
 import check
 from cache import TTLCache
@@ -61,7 +62,7 @@ app = Flask(__name__)
 app.wsgi_app = PrefixMiddleware(app.wsgi_app)
 app.jinja_env.globals.update(smooth_path=charts.smooth_path, nice_max=charts.nice_max)
 #: เวอร์ชันของแอป — แสดงที่ท้ายหน้าและคู่มือ (ประวัติการแก้ไขอยู่ใน CHANGELOG.md)
-VERSION = "1.2.4"
+VERSION = "1.3.0"
 #: ผู้พัฒนา — แสดงท้ายทุกหน้าและในคู่มือ (ทุกโรงพยาบาลที่ติดตั้ง) แก้ทับได้ด้วย env OPD_DEV_CONTACT
 DEV_CONTACT = "นายเผด็จชัย สิงหล โรงพยาบาลวังน้ำเขียว โทร 086-257-4817"
 #: เปลี่ยนเลขนี้ทุกครั้งที่เปลี่ยนไอคอน — บังคับ Safari/Chrome โหลดไอคอนหน้าจอโฮมใหม่
@@ -99,7 +100,8 @@ app.jinja_env.filters["n"] = lambda v: f"{v:,}" if isinstance(v, (int, float)) e
 
 
 #: พารามิเตอร์ของแอปเอง — ตัวอื่นที่เข้ามา (เช่นที่ HOSxP Marketplace ส่งตอนเปิด add-on) จะถูกบันทึก
-_KNOWN_ARGS = {"d1", "d2", "print", "d", "t", "tv", "dep", "step", "over"}
+_KNOWN_ARGS = {"d1", "d2", "print", "d", "t", "tv", "dep", "step", "over",
+               "bms-session-id", "marketplace_token", "vn"}     # 3 ตัวหลัง HOSxP ต่อท้ายให้ Add-on
 #: header มาตรฐานของเบราว์เซอร์/proxy — ไม่ต้องบันทึก
 _STD_HEADERS = {"host", "user-agent", "accept", "accept-language", "accept-encoding", "connection",
                 "cookie", "referer", "upgrade-insecure-requests", "cache-control", "pragma",
@@ -254,18 +256,67 @@ def _hn_allowed():
 
 
 def _drilldown_allowed():
-    """หน้ารายเคส (/cases) และตรวจข้อมูล (/check) — ค่าเริ่มต้นเปิดเฉพาะใน LAN
+    """โหมด bms: ผู้ใช้คือเจ้าหน้าที่ที่ล็อกอิน HOSxP แล้ว และ API ปิดบังข้อมูลส่วนบุคคลให้เอง → เปิดได้เสมอ
+หน้ารายเคส (/cases) และตรวจข้อมูล (/check) — ค่าเริ่มต้นเปิดเฉพาะใน LAN
 
     แม้ซ่อน HN แล้ว รายการ visit (วันที่ เวลา แผนก สิทธิ เวลาแต่ละขั้น) ยังโยงกลับไปหาตัวผู้ป่วยได้
     ส่วน /check บอกโครงสร้างตารางของ HOSxP — ไม่ควรเปิดให้คนบนอินเทอร์เน็ตดู
     env OPD_PUBLIC_DRILLDOWN=1 = เปิดให้ทุกที่ (แบบเดิม)
     """
-    return os.getenv("OPD_PUBLIC_DRILLDOWN", "0") == "1" or _from_lan()
+    return db.MODE == "bms" or os.getenv("OPD_PUBLIC_DRILLDOWN", "0") == "1" or _from_lan()
 
 
 @app.context_processor
 def _drilldown_flag():
-    return {"drilldown": _drilldown_allowed()}
+    return {"drilldown": _drilldown_allowed(), "export_enabled": EXPORT_ENABLED}
+
+
+# ------------------------------------------------- โหมด BMS Marketplace (OPD_DB_MODE=bms)
+#: cookie เก็บ bms-session-id ของเบราว์เซอร์นี้ (HttpOnly) — HOSxP ส่ง id มาใน URL ครั้งแรกครั้งเดียว
+BMS_COOKIE = "opd_bms_sid"
+_NO_SESSION_PATHS = ("/static/", "/healthz", "/manifest.webmanifest")
+
+
+def _bms_page(msg, status):
+    return render_template("bms_session.html", msg=msg), status
+
+
+@app.before_request
+def _bms_session():
+    """ผูก BMS session กับ request นี้ — ทุกคำสั่ง SQL ใช้ session ของผู้ใช้คนนี้ (รพ. ของเขา)"""
+    bms_session.current.set(None)       # ล้างของ request ก่อนหน้าในเธรดเดียวกัน (ห้ามข้าม รพ.)
+    if db.MODE != "bms" or request.path.startswith(_NO_SESSION_PATHS):
+        return None
+    from_url = request.args.get("bms-session-id")
+    sid = from_url or request.cookies.get(BMS_COOKIE)
+    if not sid:
+        return _bms_page("กรุณาเปิด OPD Dashboard จากเมนู Add-on ในโปรแกรม HOSxP", 401)
+    try:
+        sess = bms_session.connect(sid)
+    except bms_session.SessionError as exc:
+        return _bms_page(str(exc), 401)
+    bms_session.current.set(sess)
+    if from_url and request.method == "GET":
+        # เก็บ id ไว้ใน cookie แล้วตัดออกจาก URL — ไม่ให้ค้างในประวัติ/ลิงก์ที่แชร์ต่อ
+        args = request.args.to_dict(flat=False)
+        for secret in ("bms-session-id", "marketplace_token"):
+            args.pop(secret, None)
+        target = url_for(request.endpoint, **(request.view_args or {}), **args) if request.endpoint else "/"
+        resp = redirect(target)
+        resp.set_cookie(BMS_COOKIE, sid, max_age=bms_session.MAX_AGE, httponly=True,
+                        secure=request.is_secure, samesite="Lax")
+        return resp
+    return None
+
+
+@app.errorhandler(bms_session.SessionError)
+def _bms_expired(exc):
+    return _bms_page(str(exc), 401)
+
+
+@app.errorhandler(bms_session.TruncatedResult)
+def _bms_truncated(exc):
+    return _bms_page(str(exc), 413)
 
 
 def _lan_only_page(what):
@@ -314,6 +365,8 @@ def help_page():
 @app.route("/help.pdf")
 def help_pdf():
     """คู่มือฉบับพิมพ์ (A4) — เรนเดอร์หน้า /help ด้วย chromium headless"""
+    if not EXPORT_ENABLED:
+        return {"error": "ปิดการส่งออกไฟล์ในโหมดนี้ — ใช้คำสั่งพิมพ์ของเบราว์เซอร์แทน"}, 404
     url = f"http://127.0.0.1:{os.getenv('PORT', '5900')}/help?print=1"
     name = f"OPD_Dashboard_manual_{VERSION}.pdf"
     blob = _export_cache.get(name, EXPORT_CACHE_TTL)
@@ -436,6 +489,10 @@ class _RenderLock:
 
 _render_lock = _RenderLock(os.path.join(tempfile.gettempdir(), "opd_dashboard_render.lock"))
 
+#: ส่งออก PNG/JPG/PDF ใช้ chromium เรนเดอร์หน้าของแอปเอง — โหมด bms ปิด (container ไม่มี chromium
+#: และหน้าที่เรนเดอร์ภายในไม่มี session ของผู้ใช้) · ผู้ใช้สั่งพิมพ์จากเบราว์เซอร์แทนได้
+EXPORT_ENABLED = db.MODE != "bms" and os.getenv("OPD_EXPORT", "1") != "0"
+
 #: รอคิวส่งออกได้นานสุดกี่วินาที — ค่าเริ่มต้น 0 = ไม่รอ ตอบ "ไม่ว่าง" ทันที
 #: (เดิมรอ 90 วินาที: คนบนอินเทอร์เน็ตยิงส่งออกพร้อมกัน 3–4 ครั้งก็กิน worker ของ gunicorn หมดจนเว็บค้าง)
 EXPORT_WAIT = int(os.getenv("OPD_EXPORT_WAIT", "0"))
@@ -456,8 +513,8 @@ def export(fmt):
 
     เรียกหน้าเดิมของตัวเองด้วย ?print=1 (ซ่อนแถบเครื่องมือ) แล้วถ่ายภาพ
     """
-    if fmt not in MIME:
-        return {"error": "รองรับเฉพาะ png, jpg, pdf"}, 404
+    if fmt not in MIME or not EXPORT_ENABLED:
+        return {"error": "รองรับเฉพาะ png, jpg, pdf" if EXPORT_ENABLED else "ปิดการส่งออกไฟล์ในโหมดนี้"}, 404
 
     d1, d2, _ = _params()
     qs = urllib.parse.urlencode({"d1": d1, "d2": d2, "print": "1"})
