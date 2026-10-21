@@ -52,7 +52,9 @@ class FakeHTTP:
         assert url == bms_session.PASTE_URL and params["Action"] == "GET"
         return FakeResp(self.sessions.get(params["code"], {"MessageCode": 500, "Message": "not found"}))
 
-    def post(self, url, headers=None, json=None, timeout=None):
+    def post(self, url, params=None, headers=None, json=None, timeout=None):
+        if params:
+            url = url + "?" + "&".join(f"{k}={v}" for k, v in params.items())
         self.sql_calls.append((url, headers, json))
         return FakeResp(self.sql_reply(url, json), self.sql_status)
 
@@ -235,3 +237,27 @@ def test_check_page_keeps_each_query_within_20_tables(bms):
     assert c.get("/check").status_code == 200
     for _, _, body in bms.sql_calls:
         assert body["sql"].lower().count("service_time") + body["sql"].lower().count(" ovst ") <= 20
+
+
+def test_marketplace_token_forwarded_in_body_not_url(bms):
+    c = app_mod.app.test_client()
+    c.get("/?bms-session-id=sess-aaaa-1111&marketplace_token=hxp_abc123")
+    c.get("/api/flow.json")
+    url, headers, body = bms.sql_calls[-1]
+    assert body["marketplace-token"] == "hxp_abc123"
+    assert "hxp_abc123" not in url
+
+
+def test_no_marketplace_token_no_field(bms):
+    c = app_mod.app.test_client()
+    c.get("/?bms-session-id=sess-aaaa-1111")
+    c.get("/api/flow.json")
+    assert "marketplace-token" not in bms.sql_calls[-1][2]
+
+
+def test_truncated_message_shows_limit(bms):
+    c = app_mod.app.test_client()
+    c.get("/?bms-session-id=sess-aaaa-1111")
+    bms.sql_reply = lambda url, body: {"MessageCode": 200, "data": [], "truncated": True,
+                                       "result_limit_bytes": 1048576}
+    assert "1,024 KB" in c.get("/cases").get_data(as_text=True)

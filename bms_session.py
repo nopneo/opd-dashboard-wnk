@@ -62,6 +62,12 @@ class Session:
 
 _sessions = TTLCache(maxsize=512)
 current = contextvars.ContextVar("bms_session", default=None)
+#: marketplace token ของ Add-on (HOSxP ต่อท้าย launch URL เป็น marketplace_token) — ส่งต่อไปกับ /api/sql
+#: ให้ HOSxP ตัดสินสิทธิ์รายตาราง (grantedTables) · API อ่านชื่อ "marketplace-token" (ขีดกลาง)
+marketplace_token = contextvars.ContextVar("bms_marketplace_token", default=None)
+#: ส่ง token ใน query string ด้วย (ปกติส่งแค่ใน body — query string เสี่ยงค้างใน log ของ tunnel)
+TOKEN_IN_QUERY = os.getenv("OPD_BMS_TOKEN_IN_QUERY", "0") == "1"
+_TOKEN_RX = re.compile(r"[A-Za-z0-9_.:-]{4,200}")
 _local = threading.local()
 
 
@@ -74,6 +80,10 @@ def _http():
 
 def valid_id(session_id):
     return bool(session_id) and bool(_ID_RX.fullmatch(session_id))
+
+
+def valid_token(token):
+    return bool(token) and bool(_TOKEN_RX.fullmatch(token))
 
 
 def _allowed_url(url):
@@ -129,11 +139,17 @@ def run_sql(sql):
     sess = current.get()
     if sess is None:
         raise SessionError("ไม่มี BMS session — เปิดแอปจาก HOSxP")
+    body = {"sql": " ".join(sql.split()), "app": APP_ID}
+    params = None
+    mkt = marketplace_token.get()
+    if mkt:
+        body["marketplace-token"] = mkt
+        if TOKEN_IN_QUERY:
+            params = {"marketplace-token": mkt}
     try:
-        r = _http().post(f"{sess.url}/api/sql",
+        r = _http().post(f"{sess.url}/api/sql", params=params,
                          headers={"Authorization": f"Bearer {sess.token}"},
-                         json={"sql": " ".join(sql.split()), "app": APP_ID},
-                         timeout=QUERY_TIMEOUT + 5)
+                         json=body, timeout=QUERY_TIMEOUT + 5)
     except requests.RequestException as exc:
         raise RuntimeError(f"ติดต่อ HOSxP ของโรงพยาบาลไม่ได้ ({type(exc).__name__})") from None
     if r.status_code in (401, 501):
@@ -148,5 +164,7 @@ def run_sql(sql):
     if payload.get("MessageCode") != 200:
         raise RuntimeError(f"HOSxP API {payload.get('MessageCode')}: {str(payload.get('Message'))[:300]}")
     if payload.get("truncated"):
-        raise TruncatedResult("ข้อมูลมากเกินกว่าที่ API ส่งได้ในครั้งเดียว — ลองเลือกช่วงวันที่สั้นลง")
+        limit = payload.get("result_limit_bytes")
+        size = f" (เพดาน {int(limit) // 1024:,} KB)" if str(limit or "").isdigit() and int(limit) else ""
+        raise TruncatedResult(f"ข้อมูลมากเกินกว่าที่ API ส่งได้ในครั้งเดียว{size} — ลองเลือกช่วงวันที่สั้นลง")
     return payload.get("data") or []

@@ -277,6 +277,7 @@ def _drilldown_flag():
 # ------------------------------------------------- โหมด BMS Marketplace (OPD_DB_MODE=bms)
 #: cookie เก็บ bms-session-id ของเบราว์เซอร์นี้ (HttpOnly) — HOSxP ส่ง id มาใน URL ครั้งแรกครั้งเดียว
 BMS_COOKIE = "opd_bms_sid"
+BMS_MKT_COOKIE = "opd_bms_mkt"
 _NO_SESSION_PATHS = ("/static/", "/healthz", "/manifest.webmanifest")
 
 
@@ -288,6 +289,7 @@ def _bms_page(msg, status):
 def _bms_session():
     """ผูก BMS session กับ request นี้ — ทุกคำสั่ง SQL ใช้ session ของผู้ใช้คนนี้ (รพ. ของเขา)"""
     bms_session.current.set(None)       # ล้างของ request ก่อนหน้าในเธรดเดียวกัน (ห้ามข้าม รพ.)
+    bms_session.marketplace_token.set(None)
     if db.MODE != "bms" or request.path.startswith(_NO_SESSION_PATHS):
         return None
     from_url = request.args.get("bms-session-id")
@@ -299,15 +301,24 @@ def _bms_session():
     except bms_session.SessionError as exc:
         return _bms_page(str(exc), 401)
     bms_session.current.set(sess)
+    mkt_url = request.args.get("marketplace_token") or request.args.get("marketplace-token")
+    mkt = mkt_url if from_url else request.cookies.get(BMS_MKT_COOKIE)
+    if mkt and bms_session.valid_token(mkt):
+        bms_session.marketplace_token.set(mkt)
     if from_url and request.method == "GET":
         # เก็บ id ไว้ใน cookie แล้วตัดออกจาก URL — ไม่ให้ค้างในประวัติ/ลิงก์ที่แชร์ต่อ
         args = request.args.to_dict(flat=False)
-        for secret in ("bms-session-id", "marketplace_token"):
+        for secret in ("bms-session-id", "marketplace_token", "marketplace-token"):
             args.pop(secret, None)
         target = url_for(request.endpoint, **(request.view_args or {}), **args) if request.endpoint else "/"
         resp = redirect(target)
         resp.set_cookie(BMS_COOKIE, sid, max_age=bms_session.MAX_AGE, httponly=True,
                         secure=request.is_secure, samesite="Lax")
+        if bms_session.marketplace_token.get():
+            resp.set_cookie(BMS_MKT_COOKIE, bms_session.marketplace_token.get(), max_age=bms_session.MAX_AGE,
+                            httponly=True, secure=request.is_secure, samesite="Lax")
+        else:
+            resp.delete_cookie(BMS_MKT_COOKIE)
         return resp
     return None
 
