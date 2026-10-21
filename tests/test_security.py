@@ -7,13 +7,18 @@ import pytest
 import app as app_mod
 import render
 
-#: คำขอจากอินเทอร์เน็ตผ่าน proxy มี X-Forwarded-For เสมอ
-PUBLIC = {"X-Forwarded-For": "203.0.113.7", "X-Forwarded-Prefix": "/opd"}
+#: คำขอจากอินเทอร์เน็ต: Cloudflare ใส่ CF-Connecting-IP และ Apache ต่อท้าย X-Forwarded-For ด้วย IP ของ Cloudflare
+PUBLIC = {"CF-Connecting-IP": "203.0.113.7", "X-Forwarded-For": "203.0.113.7, 172.70.1.1",
+          "X-Forwarded-Prefix": "/opd"}
+#: เจ้าหน้าที่ในโรงพยาบาลเปิดผ่านโดเมน → ออกเน็ตด้วย IP ของ รพ. แล้ววนผ่าน Cloudflare
+HOSPITAL = {"CF-Connecting-IP": "183.88.214.202", "X-Forwarded-For": "183.88.214.202, 172.70.1.1",
+            "X-Forwarded-Prefix": "/opd"}
 
 
 @pytest.fixture
 def client(fake_db, monkeypatch):
     monkeypatch.delenv("OPD_PUBLIC_DRILLDOWN", raising=False)
+    monkeypatch.setattr(app_mod, "TRUSTED_NETS", app_mod._networks("183.88.214.202, 10.99.0.0/16"))
     app_mod._export_cache._data.clear()
     app_mod.app.config["TESTING"] = True
     return app_mod.app.test_client()
@@ -28,6 +33,40 @@ def test_drilldown_blocked_from_internet(client, url):
 @pytest.mark.parametrize("url", ["/cases", "/check"])
 def test_drilldown_open_on_lan(client, url):
     assert client.get(url, environ_base={"REMOTE_ADDR": "192.168.1.20"}).status_code == 200
+
+
+def test_hospital_ip_through_cloudflare_counts_as_lan(client):
+    assert client.get("/cases", headers=HOSPITAL).status_code == 200
+    assert "/cases" in client.get("/", headers=HOSPITAL).get_data(as_text=True)
+
+
+@pytest.mark.parametrize("headers, lan", [
+    ({"CF-Connecting-IP": "10.99.3.4"}, True),                                  # อยู่ในช่วง CIDR ที่ตั้งไว้
+    ({"CF-Connecting-IP": "30.25.3.7"}, False),                                 # ช่วง LAN ไม่นับเมื่อมาทาง Cloudflare
+    ({"CF-Connecting-IP": "192.168.1.5"}, False),                               # IP ภายในแต่มาทาง Cloudflare = ปลอม
+    ({"CF-Connecting-IP": "not-an-ip"}, False),
+    ({"X-Forwarded-For": "192.168.10.5"}, True),                                # proxy ใน รพ. โดยไม่ผ่าน Cloudflare
+    ({"X-Forwarded-For": "192.168.10.5, 8.8.8.8"}, False),                      # hop ท้ายเป็น IP สาธารณะ
+    ({"X-Forwarded-For": "30.25.3.7"}, True),                                   # ช่วงภายในที่ตั้งใน OPD_LAN_NETS
+    ({"X-Forwarded-For": "30.26.0.1"}, False),
+    ({"X-Forwarded-For": "183.88.214.202"}, False),                             # ไม่มี CF header = ไม่เชื่อ IP สาธารณะ
+])
+def test_lan_detection(headers, lan):
+    with app_mod.app.test_request_context("/", headers=headers, environ_base={"REMOTE_ADDR": "127.0.0.1"}):
+        app_mod.TRUSTED_NETS = app_mod._networks("183.88.214.202,10.99.0.0/16")
+        app_mod.LAN_NETS = app_mod._networks("30.25.0.0/16")
+        try:
+            assert app_mod._from_lan() is lan
+        finally:
+            app_mod.LAN_NETS = []
+
+
+def test_hn_hidden_for_hospital_ip_via_cloudflare_unless_lan(client):
+    """HN ใช้หลักเดียวกัน — ผ่าน Cloudflare จาก IP ของ รพ. เห็น HN, จากที่อื่นไม่เห็น"""
+    with app_mod.app.test_request_context("/cases", headers=HOSPITAL):
+        assert app_mod._hn_allowed()
+    with app_mod.app.test_request_context("/cases", headers=PUBLIC):
+        assert not app_mod._hn_allowed()
 
 
 def test_drilldown_can_be_made_public(client, monkeypatch):

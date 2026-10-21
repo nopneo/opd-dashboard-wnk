@@ -199,17 +199,53 @@ def dashboard():
                            print_mode=request.args.get("print") == "1")
 
 
-def _from_lan():
-    """เครื่องในเครือข่ายภายในที่ต่อเข้าแอปตรง ๆ
+def _networks(raw):
+    out = []
+    for part in (raw or "").replace(" ", ",").split(","):
+        if part.strip():
+            try:
+                out.append(ipaddress.ip_network(part.strip(), strict=False))
+            except ValueError:
+                app.logger.warning("OPD_TRUSTED_IPS: อ่าน %r ไม่ได้ — ข้าม", part)
+    return out
 
-    ผ่าน reverse proxy (มี X-Forwarded-For) = อาจมาจากอินเทอร์เน็ต → ไม่นับเป็น LAN
-    """
-    if request.headers.get("X-Forwarded-For") or request.headers.get("X-Forwarded-Prefix"):
-        return False
+
+#: IP สาธารณะของโรงพยาบาล — คำขอผ่าน Cloudflare ที่มาจาก IP เหล่านี้นับเป็น "ใน รพ."
+#: (เจ้าหน้าที่เปิด https://<โดเมน>/opd/ จากในโรงพยาบาลก็วิ่งผ่าน Cloudflare เหมือนคนนอก)
+#: เช่น OPD_TRUSTED_IPS=183.88.214.202 (คั่นด้วยจุลภาค ใส่ช่วง CIDR ได้)
+TRUSTED_NETS = _networks(os.getenv("OPD_TRUSTED_IPS", ""))
+#: ช่วง IP ภายในที่ไม่ใช่ private มาตรฐาน (10/8, 172.16/12, 192.168/16) — เช่นเครือข่ายที่ใช้ 30.25.0.0/16
+#: ใช้เฉพาะคำขอที่ต่อเข้ามาตรง ไม่ผ่าน Cloudflare
+LAN_NETS = _networks(os.getenv("OPD_LAN_NETS", ""))
+
+
+def _private(ip):
     try:
-        return ipaddress.ip_address(request.remote_addr or "").is_private
+        ip = ipaddress.ip_address((ip or "").strip())
     except ValueError:
         return False
+    return ip.is_private or any(ip in net for net in LAN_NETS)
+
+
+def _from_lan():
+    """คำขอนี้มาจากในโรงพยาบาลหรือไม่
+
+    - ผ่าน Cloudflare (มี CF-Connecting-IP ซึ่ง Cloudflare ใส่เองเสมอ คนข้างนอกปลอมไม่ได้
+      เพราะ firewall ให้ Cloudflare เท่านั้นเข้าถึงเว็บ): นับเป็น LAN เมื่อ IP นั้นอยู่ใน OPD_TRUSTED_IPS
+    - ผ่าน reverse proxy ใน รพ. โดยไม่ผ่าน Cloudflare (มี X-Forwarded-For): ดู IP ตัวท้ายที่ proxy ใส่
+    - ต่อแอปตรง ๆ (http://<IP>:5900): ดู IP ของเครื่องที่ต่อ
+    """
+    cf = request.headers.get("CF-Connecting-IP")
+    if cf:
+        try:
+            ip = ipaddress.ip_address(cf.strip())
+        except ValueError:
+            return False
+        return any(ip in net for net in TRUSTED_NETS)
+    xff = request.headers.get("X-Forwarded-For")
+    if xff:
+        return _private(xff.split(",")[-1]) and _private(request.remote_addr)
+    return _private(request.remote_addr)
 
 
 def _hn_allowed():
