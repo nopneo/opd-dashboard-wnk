@@ -1,0 +1,17 @@
+.env
+.git
+.venv
+.claude
+.pytest_cache
+__pycache__
+*.pyc
+out
+dist
+docs
+tests
+deploy_ssh.py
+DEPLOY_WNK.md
+flow_layout.json
+logo.png
+logo2.png
+ผัง.jpg
