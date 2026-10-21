@@ -269,7 +269,7 @@ document.addEventListener('DOMContentLoaded', function () {
         </div>
         <div class="note">แผนกที่เลือกส่งคิวตอนเปิด visit (ovst.main_dep)
           {%- if d.dept_mis.count %} · <b>ส่งคิวไม่ตรง</b> = ส่งคิวแรกไป
-          {% for x in d.dept_mis.rows[:3] %}{% if print_mode %}{{ x.name }}{% else %}<a class="drill"
+          {% for x in d.dept_mis.rows[:3] %}{% if print_mode or not drilldown %}{{ x.name }}{% else %}<a class="drill"
             href="{{ url_for('cases_page', d1=d.d1, d2=d.d2, dep=x.dep) }}">{{ x.name }}</a>{% endif %} {{ x.count | n }}{% if not loop.last %}, {% endif %}{% endfor %}
           แต่ {{ d.dept_mis.seen | n }} รายยังพบแพทย์ — มักเกิดจากเลือกแผนกผิดตอนส่งคิว{% endif %}</div>
       </div>
@@ -305,7 +305,7 @@ document.addEventListener('DOMContentLoaded', function () {
           <tr><th>ขั้นตอน</th><th>เวลาเฉลี่ย</th><th>Target (SLA)</th><th class="c">สถานะ</th></tr>
           {% for s in d.sla %}
           <tr class="{{ 'fail' if s.ok == false }}">
-            <td>{% if print_mode %}{{ s.label }}{% else %}<a class="drill" title="ดูรายเคสที่ขั้นนี้รอนานสุด"
+            <td>{% if print_mode or not drilldown %}{{ s.label }}{% else %}<a class="drill" title="ดูรายเคสที่ขั้นนี้รอนานสุด"
                 href="{{ url_for('cases_page', d1=d.d1, d2=d.d2, step=loop.index0, over=1) }}">{{ s.label }} ›</a>{% endif %}</td>
             <td>{{ s.avg ~ ' นาที' if s.avg is not none else '–' }}</td>
             <td>≤ {{ s.target }} นาที</td>
@@ -324,7 +324,7 @@ document.addEventListener('DOMContentLoaded', function () {
         <table class="t sortable">
           <tr><th>แผนก / คลินิก</th><th>จำนวนผู้ป่วย</th><th>เวลารอพบแพทย์เฉลี่ย</th></tr>
           {% for c in d.clinics %}
-          <tr><td>{% if print_mode %}{{ c.name }}{% else %}<a class="drill"
+          <tr><td>{% if print_mode or not drilldown %}{{ c.name }}{% else %}<a class="drill"
                 href="{{ url_for('cases_page', d1=d.d1, d2=d.d2, dep=c.dep) }}">{{ c.name }} ›</a>{% endif %}</td><td data-v="{{ c.count }}">{{ c.count | n }}</td>
             <td class="{{ 'bad' if c.wait_dr is not none and c.wait_dr > d.targets.wait_dr }}">
               {{ c.wait_dr ~ ' นาที' if c.wait_dr is not none else '–' }}</td></tr>
@@ -657,7 +657,7 @@ document.addEventListener('DOMContentLoaded', function () {
       <input class="search" type="search" placeholder="🔍 ค้นหาแผนก…" data-search="#deps" data-count="#deps-count"
              aria-label="ค้นหาแผนก">
       <span class="count" id="deps-count"></span>
-      <a class="tag" href="{{ url_for('cases_page', d1=d.d1, d2=d.d2) }}">ดูรายเคสทั้งหมด ›</a>
+      {% if drilldown %}<a class="tag" href="{{ url_for('cases_page', d1=d.d1, d2=d.d2) }}">ดูรายเคสทั้งหมด ›</a>{% endif %}
     </header>
     <div class="body scroll-x">
       <table class="t sortable" id="deps">
@@ -674,7 +674,7 @@ document.addEventListener('DOMContentLoaded', function () {
               class="{{ 'bad' if x.total is not none and x.total > d.targets.total }}">{{ x.total ~ ' นาที' if x.total is not none else '–' }}</td>
           <td data-v="{{ x.done_pct if x.done_pct is not none else '' }}"
               class="{{ 'bad' if x.done_pct is not none and x.done_pct < d.targets.done }}">{{ x.done_pct ~ '%' if x.done_pct is not none else '–' }}</td>
-          <td class="c"><a class="drill" href="{{ url_for('cases_page', d1=d.d1, d2=d.d2, dep=x.dep) }}">ดู ›</a></td>
+          <td class="c">{% if drilldown %}<a class="drill" href="{{ url_for('cases_page', d1=d.d1, d2=d.d2, dep=x.dep) }}">ดู ›</a>{% else %}–{% endif %}</td>
         </tr>
         {% endfor %}
       </table>

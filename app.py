@@ -25,6 +25,7 @@ from flask import (Flask, jsonify, render_template, request, send_file,
 
 import charts
 import check
+from cache import TTLCache
 import db
 import deps
 import flow
@@ -60,7 +61,7 @@ app = Flask(__name__)
 app.wsgi_app = PrefixMiddleware(app.wsgi_app)
 app.jinja_env.globals.update(smooth_path=charts.smooth_path, nice_max=charts.nice_max)
 #: เวอร์ชันของแอป — แสดงที่ท้ายหน้าและคู่มือ (ประวัติการแก้ไขอยู่ใน CHANGELOG.md)
-VERSION = "1.2.3"
+VERSION = "1.2.4"
 #: ผู้พัฒนา — แสดงท้ายทุกหน้าและในคู่มือ (ทุกโรงพยาบาลที่ติดตั้ง) แก้ทับได้ด้วย env OPD_DEV_CONTACT
 DEV_CONTACT = "นายเผด็จชัย สิงหล โรงพยาบาลวังน้ำเขียว โทร 086-257-4817"
 #: เปลี่ยนเลขนี้ทุกครั้งที่เปลี่ยนไอคอน — บังคับ Safari/Chrome โหลดไอคอนหน้าจอโฮมใหม่
@@ -198,14 +199,11 @@ def dashboard():
                            print_mode=request.args.get("print") == "1")
 
 
-def _hn_allowed():
-    """แสดง HN ในหน้ารายเคสได้เฉพาะเครื่องในเครือข่ายภายในที่ต่อเข้าแอปตรง ๆ
+def _from_lan():
+    """เครื่องในเครือข่ายภายในที่ต่อเข้าแอปตรง ๆ
 
-    ผ่าน reverse proxy (มี X-Forwarded-For) = อาจมาจากอินเทอร์เน็ต → ไม่แสดง
-    ตั้ง env OPD_SHOW_HN=off เพื่อปิดทุกกรณี (ค่าเริ่มต้น lan)
+    ผ่าน reverse proxy (มี X-Forwarded-For) = อาจมาจากอินเทอร์เน็ต → ไม่นับเป็น LAN
     """
-    if os.getenv("OPD_SHOW_HN", "lan").lower() != "lan":
-        return False
     if request.headers.get("X-Forwarded-For") or request.headers.get("X-Forwarded-Prefix"):
         return False
     try:
@@ -214,9 +212,45 @@ def _hn_allowed():
         return False
 
 
+def _hn_allowed():
+    """แสดง HN ในหน้ารายเคสได้เฉพาะเครื่องใน LAN · ตั้ง env OPD_SHOW_HN=off เพื่อปิดทุกกรณี (ค่าเริ่มต้น lan)"""
+    return os.getenv("OPD_SHOW_HN", "lan").lower() == "lan" and _from_lan()
+
+
+def _drilldown_allowed():
+    """หน้ารายเคส (/cases) และตรวจข้อมูล (/check) — ค่าเริ่มต้นเปิดเฉพาะใน LAN
+
+    แม้ซ่อน HN แล้ว รายการ visit (วันที่ เวลา แผนก สิทธิ เวลาแต่ละขั้น) ยังโยงกลับไปหาตัวผู้ป่วยได้
+    ส่วน /check บอกโครงสร้างตารางของ HOSxP — ไม่ควรเปิดให้คนบนอินเทอร์เน็ตดู
+    env OPD_PUBLIC_DRILLDOWN=1 = เปิดให้ทุกที่ (แบบเดิม)
+    """
+    return os.getenv("OPD_PUBLIC_DRILLDOWN", "0") == "1" or _from_lan()
+
+
+@app.context_processor
+def _drilldown_flag():
+    return {"drilldown": _drilldown_allowed()}
+
+
+def _lan_only_page(what):
+    return (f"หน้า{what}เปิดได้เฉพาะเครื่องในเครือข่ายของโรงพยาบาล — "
+            "ดูแดชบอร์ดสรุปได้ตามปกติ", 403, {"Content-Type": "text/plain; charset=utf-8"})
+
+
+@app.after_request
+def _security_headers(resp):
+    """ห้ามเบราว์เซอร์เดาชนิดไฟล์ และไม่ส่ง URL (ซึ่งมีช่วงวันที่/แผนก) ไปเว็บอื่น
+    (ไม่ใส่ X-Frame-Options — HOSxP อาจเปิดหน้านี้ในกรอบของโปรแกรม ตั้งที่ proxy ได้ถ้าไม่ใช้)"""
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "same-origin")
+    return resp
+
+
 @app.route("/cases")
 def cases_page():
     """ดูรายเคส (drill down) จากบล็อกบนแดชบอร์ด"""
+    if not _drilldown_allowed():
+        return _lan_only_page("ดูรายเคส")
     d1, d2, warn = _params()
     dep = request.args.get("dep", "")
     dep = dep if re.fullmatch(r"[0-9A-Za-z]{1,10}", dep) else ""
@@ -245,15 +279,19 @@ def help_page():
 def help_pdf():
     """คู่มือฉบับพิมพ์ (A4) — เรนเดอร์หน้า /help ด้วย chromium headless"""
     url = f"http://127.0.0.1:{os.getenv('PORT', '5900')}/help?print=1"
-    if not _render_lock.acquire(timeout=90):
-        return {"error": "มีงานส่งออกอื่นค้างอยู่ ลองใหม่อีกครั้ง"}, 503
+    name = f"OPD_Dashboard_manual_{VERSION}.pdf"
+    blob = _export_cache.get(name, EXPORT_CACHE_TTL)
+    if blob is not None:
+        return send_file(BytesIO(blob), mimetype="application/pdf", as_attachment=True, download_name=name)
+    if not _render_lock.acquire(timeout=EXPORT_WAIT):
+        return _busy()
     try:
         with tempfile.TemporaryDirectory() as tmp:
             out = os.path.join(tmp, "manual.pdf")
             render.to_pdf(render.find_browser(), url, out)
             blob = open(out, "rb").read()
-        return send_file(BytesIO(blob), mimetype="application/pdf", as_attachment=True,
-                         download_name=f"OPD_Dashboard_manual_{VERSION}.pdf")
+        _export_cache.set(name, blob)
+        return send_file(BytesIO(blob), mimetype="application/pdf", as_attachment=True, download_name=name)
     except (Exception, SystemExit) as e:        # find_browser() ไม่พบ chromium = SystemExit
         app.logger.exception("help pdf failed")
         return {"error": f"สร้าง PDF ไม่สำเร็จ: {type(e).__name__}"}, 500
@@ -264,6 +302,8 @@ def help_pdf():
 @app.route("/check")
 def check_page():
     """ตรวจความพร้อมของข้อมูล — คอลัมน์เวลาใน service_time มีข้อมูลแค่ไหน (ค่าเริ่มต้น 7 วันล่าสุด)"""
+    if not _drilldown_allowed():
+        return _lan_only_page("ตรวจข้อมูล")
     d1, d2, warn = _params()
     if not request.args.get("d1"):
         d1 = (date.fromisoformat(d2) - timedelta(days=6)).isoformat()
@@ -330,8 +370,10 @@ class _RenderLock:
         self._fd = None
 
     def acquire(self, timeout):
+        """timeout = 0 → ไม่รอเลย (ไม่ว่าง = คืน False ทันที)"""
         deadline = time.monotonic() + timeout
-        if not self._thread.acquire(timeout=timeout):
+        got = self._thread.acquire(timeout=timeout) if timeout > 0 else self._thread.acquire(blocking=False)
+        if not got:
             return False
         if fcntl is None:
             return True
@@ -358,6 +400,17 @@ class _RenderLock:
 
 _render_lock = _RenderLock(os.path.join(tempfile.gettempdir(), "opd_dashboard_render.lock"))
 
+#: รอคิวส่งออกได้นานสุดกี่วินาที — ค่าเริ่มต้น 0 = ไม่รอ ตอบ "ไม่ว่าง" ทันที
+#: (เดิมรอ 90 วินาที: คนบนอินเทอร์เน็ตยิงส่งออกพร้อมกัน 3–4 ครั้งก็กิน worker ของ gunicorn หมดจนเว็บค้าง)
+EXPORT_WAIT = int(os.getenv("OPD_EXPORT_WAIT", "0"))
+#: ไฟล์ที่ส่งออกแล้วเก็บไว้ให้คนถัดไปที่ขอช่วงเดียวกัน — ไม่ต้องเปิด chromium ซ้ำ
+EXPORT_CACHE_TTL = int(os.getenv("OPD_EXPORT_CACHE_TTL", "300"))
+_export_cache = TTLCache(maxsize=8)
+
+
+def _busy():
+    return ({"error": "กำลังส่งออกไฟล์ของผู้ใช้อื่นอยู่ ลองใหม่ในอีกครู่"}, 503, {"Retry-After": "30"})
+
 MIME = {"png": "image/png", "jpg": "image/jpeg", "pdf": "application/pdf"}
 
 
@@ -375,8 +428,11 @@ def export(fmt):
     url = f"http://127.0.0.1:{os.getenv('PORT', '5900')}/?{qs}"
 
     name = f"opd_{d1}_{d2}.{fmt}"
-    if not _render_lock.acquire(timeout=90):
-        return {"error": "มีงานส่งออกอื่นค้างอยู่ ลองใหม่อีกครั้ง"}, 503
+    blob = _export_cache.get(name, EXPORT_CACHE_TTL)
+    if blob is not None:
+        return send_file(BytesIO(blob), mimetype=MIME[fmt], as_attachment=True, download_name=name)
+    if not _render_lock.acquire(timeout=EXPORT_WAIT):
+        return _busy()
     try:
         with tempfile.TemporaryDirectory() as tmp:
             out = os.path.join(tmp, name)
@@ -384,6 +440,7 @@ def export(fmt):
             # อ่านใส่หน่วยความจำก่อนออกจาก with — send_file ยังถือ handle ค้างไว้
             # ทำให้ลบโฟลเดอร์ชั่วคราวไม่ได้ (PermissionError บน Windows)
             blob = open(out, "rb").read()
+        _export_cache.set(name, blob)
         return send_file(BytesIO(blob), mimetype=MIME[fmt],
                          as_attachment=True, download_name=name)
     except Exception as e:                      # chromium ไม่มี/ตาย/หมดเวลา

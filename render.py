@@ -42,12 +42,24 @@ BROWSERS = [
 ]
 
 
+def _no_sandbox():
+    """ปิด sandbox ของ chromium เฉพาะเมื่อจำเป็น — sandbox กันโค้ดในหน้าเว็บไม่ให้แตะเครื่อง
+
+    Linux: รันด้วย root ต้องปิด (chromium ไม่ยอมเปิด sandbox ให้ root) · user ทั่วไปเปิดไว้
+    Windows: ปิดตามเดิม (service มักรันด้วย SYSTEM ซึ่ง sandbox ใช้ไม่ได้)
+    env OPD_CHROME_NO_SANDBOX=1 บังคับปิด (เช่นเครื่องที่ปิด user namespace ไว้)
+    """
+    if os.getenv("OPD_CHROME_NO_SANDBOX") == "1":
+        return True
+    geteuid = getattr(os, "geteuid", None)
+    return geteuid is None or geteuid() == 0
+
+
 def _base_args(browser, profile):
-    """headless_shell รับแค่ --headless ส่วน Chrome/Edge รุ่นใหม่ใช้ --headless=new
-    และต้อง --no-sandbox เพราะ service รันด้วย root"""
+    """headless_shell รับแค่ --headless ส่วน Chrome/Edge รุ่นใหม่ใช้ --headless=new"""
     flag = "--headless" if "headless_shell" in browser else "--headless=new"
-    return [browser, flag, "--disable-gpu", "--no-sandbox",
-            "--disable-dev-shm-usage", f"--user-data-dir={profile}"]
+    return ([browser, flag, "--disable-gpu"] + (["--no-sandbox"] if _no_sandbox() else [])
+            + ["--disable-dev-shm-usage", f"--user-data-dir={profile}"])
 
 
 def find_browser():

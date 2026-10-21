@@ -30,12 +30,14 @@ GRANT SELECT ON hos.* TO 'opd_ro'@'<IP เซิร์ฟเวอร์แอ�
 ## 2. ติดตั้งบน Linux
 
 ```bash
-sudo unzip opd_dashboard-1.2.3.zip -d /opt && cd /opt/opd_dashboard
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-cp .env.example .env && chmod 600 .env
-nano .env            # ใส่ DB_HOST / DB_USER / DB_PASS ของ รพ.
-.venv/bin/gunicorn -w 3 -t 120 -b 0.0.0.0:5900 app:app     # ทดสอบ แล้วเปิด http://<IP>:5900/
+sudo unzip opd_dashboard-1.2.4.zip -d /opt && cd /opt/opd_dashboard
+sudo useradd --system --home-dir /opt/opd_dashboard --shell /sbin/nologin opd   # ไม่รันแอปด้วย root
+sudo python3 -m venv .venv
+sudo .venv/bin/pip install -r requirements.txt
+sudo cp .env.example .env
+sudo nano .env       # ใส่ DB_HOST / DB_USER / DB_PASS ของ รพ.
+sudo chown -R opd:opd /opt/opd_dashboard && sudo chmod 600 .env
+sudo -u opd .venv/bin/gunicorn -w 3 -t 120 -b 0.0.0.0:5900 app:app     # ทดสอบ แล้วเปิด http://<IP>:5900/
 ```
 
 รันเป็น service (systemd) — `/etc/systemd/system/opd-dashboard.service`:
@@ -46,6 +48,8 @@ Description=OPD Dashboard
 After=network.target
 
 [Service]
+User=opd
+Group=opd
 WorkingDirectory=/opt/opd_dashboard
 ExecStart=/opt/opd_dashboard/.venv/bin/gunicorn -w 3 -t 120 -b 0.0.0.0:5900 app:app
 Restart=always
@@ -56,6 +60,17 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload && sudo systemctl enable --now opd-dashboard
+```
+
+**ไม่รันด้วย root** — ถ้าแอปหรือ chromium (ปุ่มส่งออก) มีช่องโหว่ ผู้โจมตีจะได้แค่สิทธิ์ของ user `opd`
+และเมื่อไม่ใช่ root chromium จะเปิด sandbox ได้ (ถ้าส่งออกไม่ได้เพราะเครื่องปิด user namespace ไว้ ให้ใส่
+`OPD_CHROME_NO_SANDBOX=1` ใน `.env`) · ที่ติดตั้งไว้แล้วแบบ root ย้ายได้ด้วย:
+
+```bash
+sudo useradd --system --home-dir /opt/opd_dashboard --shell /sbin/nologin opd
+sudo chown -R opd:opd /opt/opd_dashboard && sudo chmod 600 /opt/opd_dashboard/.env
+sudo systemctl edit --full opd-dashboard     # เพิ่ม User=opd และ Group=opd ใต้ [Service]
+sudo systemctl restart opd-dashboard
 ```
 
 ## 3. ติดตั้งบน Windows
@@ -87,6 +102,10 @@ copy .env.example .env      &REM แก้ค่า DB_ ใน .env ด้วย
 | `OPD_MAX_DAYS` | ช่วงวันที่ยาวสุดที่ดึงได้ต่อครั้ง (ค่าเริ่มต้น 366) — กันฐานข้อมูล HOSxP ช้าจากการดึงหลายปี |
 | `OPD_DB_TIMEOUT` | เวลาสูงสุดต่อคำสั่ง SQL เป็นวินาที (ค่าเริ่มต้น 60) |
 | `OPD_LOG_PARAMS` | `1` = บันทึกชื่อพารามิเตอร์ที่แอปไม่รู้จักลง log (ใช้ตรวจ add-on ของ HOSxP · ค่าเริ่มต้นปิด) |
+| `OPD_PUBLIC_DRILLDOWN` | `1` = เปิดหน้าดูรายเคส (`/cases`) และตรวจข้อมูล (`/check`) ให้เข้าจากนอก LAN ได้ · ค่าเริ่มต้นเฉพาะ LAN |
+| `OPD_EXPORT_WAIT` | ส่งออก PNG/JPG/PDF: รอคิวได้นานสุดกี่วินาที (ค่าเริ่มต้น 0 = ไม่ว่างตอบ 503 ทันที ไม่กิน worker) |
+| `OPD_EXPORT_CACHE_TTL` | เก็บไฟล์ที่ส่งออกแล้วให้คนถัดไปที่ขอช่วงเดียวกัน (วินาที, ค่าเริ่มต้น 300) |
+| `OPD_CHROME_NO_SANDBOX` | `1` = ปิด sandbox ของ chromium (ค่าเริ่มต้นปิดเฉพาะเมื่อรันด้วย root / บน Windows) |
 
 โลโก้โรงพยาบาล: วางไฟล์ PNG สี่เหลี่ยมจัตุรัสที่ `static/img/hospital_logo.png` แล้วรีสตาร์ตแอป
 
@@ -101,7 +120,14 @@ ProxyPassReverse /opd/ http://127.0.0.1:5900/
 <Location /opd/> RequestHeader set X-Forwarded-Prefix /opd </Location>
 ```
 
-แอปอ่าน `X-Forwarded-Prefix` สร้างลิงก์ให้ถูกเอง · เมื่อเข้าผ่าน proxy หน้ารายเคสจะไม่แสดง HN
+แอปอ่าน `X-Forwarded-Prefix` สร้างลิงก์ให้ถูกเอง · เมื่อเข้าผ่าน proxy หน้ารายเคส (`/cases`) และตรวจข้อมูล (`/check`)
+เปิดไม่ได้ ลิงก์จะถูกซ่อน (เปิดเฉพาะใน LAN — แม้ไม่มี HN รายการ visit ยังโยงกลับไปหาตัวผู้ป่วยได้)
+
+**ถ้าเปิดออกอินเทอร์เน็ต ควรตั้งที่ proxy / Cloudflare เพิ่ม** (แอปทำเองไม่ได้):
+- จำกัดจำนวนคำขอ (rate limit) เช่น 60 ครั้ง/นาทีต่อ IP และ 5 ครั้ง/นาทีสำหรับ `/opd/export.*`, `/opd/help.pdf`
+  — แต่ละช่วงวันที่ใหม่ยิงคำสั่งไปฐานข้อมูล HOSxP ราว 20 คำสั่ง
+- firewall ให้พอร์ต 5900 รับเฉพาะเครื่อง proxy และ LAN — ไม่ให้ข้าม proxy มาที่แอปตรง ๆ
+- header `Strict-Transport-Security`, และ `X-Frame-Options: SAMEORIGIN` ถ้าไม่ได้เปิดผ่านกรอบของโปรแกรมอื่น
 
 ## 6. ตรวจสอบหลังติดตั้ง
 
