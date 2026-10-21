@@ -25,6 +25,7 @@ def paste(code, hosp="11111", url=None, db_type="MariaDB", msg=200, name="โร
 class FakeResp:
     def __init__(self, payload, status=200):
         self._p, self.status_code = payload, status
+        self.content = __import__("json").dumps(payload).encode()
 
     def json(self):
         return self._p
@@ -261,3 +262,12 @@ def test_truncated_message_shows_limit(bms):
     bms.sql_reply = lambda url, body: {"MessageCode": 200, "data": [], "truncated": True,
                                        "result_limit_bytes": 1048576}
     assert "1,024 KB" in c.get("/cases").get_data(as_text=True)
+
+
+def test_silent_cut_at_1mb_is_detected(bms):
+    """HOSxP จริงตัดที่ ~1 MB โดยไม่ส่ง truncated (ทดสอบ 22 ต.ค. 69) — ต้องไม่เอาข้อมูลที่ขาดไปคำนวณ"""
+    c = app_mod.app.test_client()
+    c.get("/?bms-session-id=sess-aaaa-1111")
+    bms.sql_reply = lambda url, body: {"MessageCode": 200, "data": [{"pad": "x" * 200}] * 4993,
+                                       "record_count": 4993}
+    assert c.get("/cases").status_code == 413

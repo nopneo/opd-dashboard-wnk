@@ -33,6 +33,9 @@ APP_ID = os.getenv("OPD_BMS_APP", "OPD.Dashboard")
 ALLOWED_HOST_SUFFIXES = tuple(s.strip().lower() for s in
                               os.getenv("OPD_BMS_ALLOWED_HOSTS", ".hosxp.net").split(",") if s.strip())
 QUERY_TIMEOUT = int(os.getenv("OPD_DB_TIMEOUT", "60"))
+#: HOSxP (ทดสอบ 22 ต.ค. 69: MariaDB 10.6, รพ.วังน้ำเขียว) ตัดผลลัพธ์ที่ ~1 MB แบบเงียบ ๆ — ไม่ส่ง truncated
+#: (ขอ 5,000 แถว ได้ 4,993 แถว response 1,053,672 byte) → response ใหญ่เกินค่านี้ถือว่าถูกตัด
+TRUNCATE_GUARD_BYTES = int(os.getenv("OPD_BMS_TRUNCATE_GUARD", "1000000"))
 #: อายุ session ที่ใช้จริง — เอกสารบอก 3–10 ชม. ยึดค่าที่สั้นกว่า
 MAX_AGE = 3 * 3600
 
@@ -163,7 +166,7 @@ def run_sql(sql):
         raise RuntimeError(f"HOSxP API ตอบกลับไม่ใช่ JSON (HTTP {r.status_code})") from None
     if payload.get("MessageCode") != 200:
         raise RuntimeError(f"HOSxP API {payload.get('MessageCode')}: {str(payload.get('Message'))[:300]}")
-    if payload.get("truncated"):
+    if payload.get("truncated") or len(r.content) >= TRUNCATE_GUARD_BYTES:
         limit = payload.get("result_limit_bytes")
         size = f" (เพดาน {int(limit) // 1024:,} KB)" if str(limit or "").isdigit() and int(limit) else ""
         raise TruncatedResult(f"ข้อมูลมากเกินกว่าที่ API ส่งได้ในครั้งเดียว{size} — ลองเลือกช่วงวันที่สั้นลง")
