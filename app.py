@@ -6,6 +6,7 @@ production:  gunicorn -b 0.0.0.0:5900 app:app   (ออกผ่าน sub-path 
 
 import ipaddress
 import json
+import mimetypes
 import os
 import re
 import tempfile
@@ -19,6 +20,12 @@ try:
     import fcntl                # Linux/macOS — ล็อกไฟล์ข้ามโปรเซส (gunicorn หลาย worker)
 except ImportError:             # Windows รันด้วย waitress โปรเซสเดียว ใช้ threading.Lock พอ
     fcntl = None
+
+# Windows บางเครื่องตั้ง registry .css = text/plain → Chrome ไม่ใช้ stylesheet (หน้าเว็บไม่มีสไตล์)
+# บังคับ MIME เองก่อน Flask เสิร์ฟไฟล์ static ไม่พึ่ง registry ของเครื่อง
+mimetypes.add_type("text/css", ".css")
+mimetypes.add_type("text/javascript", ".js")
+mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 from flask import (Flask, jsonify, redirect, render_template, request, send_file,
                    url_for)
