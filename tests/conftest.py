@@ -19,10 +19,12 @@ DEPS = {"001": "ห้องบัตร เวชระเบียน", "010":
 @pytest.fixture(autouse=True)
 def fake_deps(monkeypatch):
     """เติมแคชแผนกไว้ก่อน deps จึงไม่ยิง DB"""
-    monkeypatch.setitem(deps._cache, "t", time.time())
-    monkeypatch.setitem(deps._cache, "deps", {
+    monkeypatch.setattr(deps, "_caches", {})
+    cache = deps._cur()
+    monkeypatch.setitem(cache, "t", time.time())
+    monkeypatch.setitem(cache, "deps", {
         c: {"name": n, "group": deps.classify(n)} for c, n in DEPS.items()})
-    monkeypatch.setitem(deps._cache, "hosp", {"hospitalname": "โรงพยาบาลทดสอบ"})
+    monkeypatch.setitem(cache, "hosp", {"hospitalname": "โรงพยาบาลทดสอบ"})
 
 
 @pytest.fixture

@@ -20,11 +20,13 @@ try:
 except ImportError:             # Windows รันด้วย waitress โปรเซสเดียว ใช้ threading.Lock พอ
     fcntl = None
 
-from flask import (Flask, jsonify, render_template, request, send_file,
+from flask import (Flask, jsonify, redirect, render_template, request, send_file,
                    url_for)
 
+import bms_session
 import charts
 import check
+from cache import TTLCache
 import db
 import deps
 import flow
@@ -60,7 +62,7 @@ app = Flask(__name__)
 app.wsgi_app = PrefixMiddleware(app.wsgi_app)
 app.jinja_env.globals.update(smooth_path=charts.smooth_path, nice_max=charts.nice_max)
 #: เวอร์ชันของแอป — แสดงที่ท้ายหน้าและคู่มือ (ประวัติการแก้ไขอยู่ใน CHANGELOG.md)
-VERSION = "1.2.3"
+VERSION = "1.3.0"
 #: ผู้พัฒนา — แสดงท้ายทุกหน้าและในคู่มือ (ทุกโรงพยาบาลที่ติดตั้ง) แก้ทับได้ด้วย env OPD_DEV_CONTACT
 DEV_CONTACT = "นายเผด็จชัย สิงหล โรงพยาบาลวังน้ำเขียว โทร 086-257-4817"
 #: เปลี่ยนเลขนี้ทุกครั้งที่เปลี่ยนไอคอน — บังคับ Safari/Chrome โหลดไอคอนหน้าจอโฮมใหม่
@@ -98,7 +100,8 @@ app.jinja_env.filters["n"] = lambda v: f"{v:,}" if isinstance(v, (int, float)) e
 
 
 #: พารามิเตอร์ของแอปเอง — ตัวอื่นที่เข้ามา (เช่นที่ HOSxP Marketplace ส่งตอนเปิด add-on) จะถูกบันทึก
-_KNOWN_ARGS = {"d1", "d2", "print", "d", "t", "tv", "dep", "step", "over"}
+_KNOWN_ARGS = {"d1", "d2", "print", "d", "t", "tv", "dep", "step", "over",
+               "bms-session-id", "marketplace_token", "vn"}     # 3 ตัวหลัง HOSxP ต่อท้ายให้ Add-on
 #: header มาตรฐานของเบราว์เซอร์/proxy — ไม่ต้องบันทึก
 _STD_HEADERS = {"host", "user-agent", "accept", "accept-language", "accept-encoding", "connection",
                 "cookie", "referer", "upgrade-insecure-requests", "cache-control", "pragma",
@@ -194,29 +197,161 @@ def dashboard():
     ranges = [("วันนี้", t, t), ("7 วันล่าสุด", t - timedelta(days=6), t),
               ("เดือนนี้", first, t), ("เดือนก่อน", prev_end.replace(day=1), prev_end)]
     ranges = [(lbl, a.isoformat(), b.isoformat()) for lbl, a, b in ranges]
-    return render_template("dashboard.html", d=queries.build(d1, d2), warn=warn, ranges=ranges,
+    d = queries.build(d1, d2)
+    if d.get("stale_since"):
+        warn = " · ".join(x for x in (warn, f"เชื่อมต่อ HOSxP ไม่ได้ — แสดงข้อมูลล่าสุดเมื่อ {d['stale_since']}") if x)
+    return render_template("dashboard.html", d=d, warn=warn, ranges=ranges,
                            print_mode=request.args.get("print") == "1")
 
 
-def _hn_allowed():
-    """แสดง HN ในหน้ารายเคสได้เฉพาะเครื่องในเครือข่ายภายในที่ต่อเข้าแอปตรง ๆ
+def _networks(raw):
+    out = []
+    for part in (raw or "").replace(" ", ",").split(","):
+        if part.strip():
+            try:
+                out.append(ipaddress.ip_network(part.strip(), strict=False))
+            except ValueError:
+                app.logger.warning("OPD_TRUSTED_IPS: อ่าน %r ไม่ได้ — ข้าม", part)
+    return out
 
-    ผ่าน reverse proxy (มี X-Forwarded-For) = อาจมาจากอินเทอร์เน็ต → ไม่แสดง
-    ตั้ง env OPD_SHOW_HN=off เพื่อปิดทุกกรณี (ค่าเริ่มต้น lan)
-    """
-    if os.getenv("OPD_SHOW_HN", "lan").lower() != "lan":
-        return False
-    if request.headers.get("X-Forwarded-For") or request.headers.get("X-Forwarded-Prefix"):
-        return False
+
+#: IP สาธารณะของโรงพยาบาล — คำขอผ่าน Cloudflare ที่มาจาก IP เหล่านี้นับเป็น "ใน รพ."
+#: (เจ้าหน้าที่เปิด https://<โดเมน>/opd/ จากในโรงพยาบาลก็วิ่งผ่าน Cloudflare เหมือนคนนอก)
+#: เช่น OPD_TRUSTED_IPS=183.88.214.202 (คั่นด้วยจุลภาค ใส่ช่วง CIDR ได้)
+TRUSTED_NETS = _networks(os.getenv("OPD_TRUSTED_IPS", ""))
+#: ช่วง IP ภายในที่ไม่ใช่ private มาตรฐาน (10/8, 172.16/12, 192.168/16) — เช่นเครือข่ายที่ใช้ 30.25.0.0/16
+#: ใช้เฉพาะคำขอที่ต่อเข้ามาตรง ไม่ผ่าน Cloudflare
+LAN_NETS = _networks(os.getenv("OPD_LAN_NETS", ""))
+
+
+def _private(ip):
     try:
-        return ipaddress.ip_address(request.remote_addr or "").is_private
+        ip = ipaddress.ip_address((ip or "").strip())
     except ValueError:
         return False
+    return ip.is_private or any(ip in net for net in LAN_NETS)
+
+
+def _from_lan():
+    """คำขอนี้มาจากในโรงพยาบาลหรือไม่
+
+    - ผ่าน Cloudflare (มี CF-Connecting-IP ซึ่ง Cloudflare ใส่เองเสมอ คนข้างนอกปลอมไม่ได้
+      เพราะ firewall ให้ Cloudflare เท่านั้นเข้าถึงเว็บ): นับเป็น LAN เมื่อ IP นั้นอยู่ใน OPD_TRUSTED_IPS
+    - ผ่าน reverse proxy ใน รพ. โดยไม่ผ่าน Cloudflare (มี X-Forwarded-For): ดู IP ตัวท้ายที่ proxy ใส่
+    - ต่อแอปตรง ๆ (http://<IP>:5900): ดู IP ของเครื่องที่ต่อ
+    """
+    cf = request.headers.get("CF-Connecting-IP")
+    if cf:
+        try:
+            ip = ipaddress.ip_address(cf.strip())
+        except ValueError:
+            return False
+        return any(ip in net for net in TRUSTED_NETS)
+    xff = request.headers.get("X-Forwarded-For")
+    if xff:
+        return _private(xff.split(",")[-1]) and _private(request.remote_addr)
+    return _private(request.remote_addr)
+
+
+def _hn_allowed():
+    """แสดง HN ในหน้ารายเคสได้เฉพาะเครื่องใน LAN · ตั้ง env OPD_SHOW_HN=off เพื่อปิดทุกกรณี (ค่าเริ่มต้น lan)"""
+    return os.getenv("OPD_SHOW_HN", "lan").lower() == "lan" and _from_lan()
+
+
+def _drilldown_allowed():
+    """โหมด bms: ผู้ใช้คือเจ้าหน้าที่ที่ล็อกอิน HOSxP แล้ว และ API ปิดบังข้อมูลส่วนบุคคลให้เอง → เปิดได้เสมอ
+หน้ารายเคส (/cases) และตรวจข้อมูล (/check) — ค่าเริ่มต้นเปิดเฉพาะใน LAN
+
+    แม้ซ่อน HN แล้ว รายการ visit (วันที่ เวลา แผนก สิทธิ เวลาแต่ละขั้น) ยังโยงกลับไปหาตัวผู้ป่วยได้
+    ส่วน /check บอกโครงสร้างตารางของ HOSxP — ไม่ควรเปิดให้คนบนอินเทอร์เน็ตดู
+    env OPD_PUBLIC_DRILLDOWN=1 = เปิดให้ทุกที่ (แบบเดิม)
+    """
+    return db.MODE == "bms" or os.getenv("OPD_PUBLIC_DRILLDOWN", "0") == "1" or _from_lan()
+
+
+@app.context_processor
+def _drilldown_flag():
+    return {"drilldown": _drilldown_allowed(), "export_enabled": EXPORT_ENABLED}
+
+
+# ------------------------------------------------- โหมด BMS Marketplace (OPD_DB_MODE=bms)
+#: cookie เก็บ bms-session-id ของเบราว์เซอร์นี้ (HttpOnly) — HOSxP ส่ง id มาใน URL ครั้งแรกครั้งเดียว
+BMS_COOKIE = "opd_bms_sid"
+BMS_MKT_COOKIE = "opd_bms_mkt"
+_NO_SESSION_PATHS = ("/static/", "/healthz", "/manifest.webmanifest")
+
+
+def _bms_page(msg, status):
+    return render_template("bms_session.html", msg=msg), status
+
+
+@app.before_request
+def _bms_session():
+    """ผูก BMS session กับ request นี้ — ทุกคำสั่ง SQL ใช้ session ของผู้ใช้คนนี้ (รพ. ของเขา)"""
+    bms_session.current.set(None)       # ล้างของ request ก่อนหน้าในเธรดเดียวกัน (ห้ามข้าม รพ.)
+    bms_session.marketplace_token.set(None)
+    if db.MODE != "bms" or request.path.startswith(_NO_SESSION_PATHS):
+        return None
+    from_url = request.args.get("bms-session-id")
+    sid = from_url or request.cookies.get(BMS_COOKIE)
+    if not sid:
+        return _bms_page("กรุณาเปิด OPD Dashboard จากเมนู Add-on ในโปรแกรม HOSxP", 401)
+    try:
+        sess = bms_session.connect(sid)
+    except bms_session.SessionError as exc:
+        return _bms_page(str(exc), 401)
+    bms_session.current.set(sess)
+    mkt_url = request.args.get("marketplace_token") or request.args.get("marketplace-token")
+    mkt = mkt_url if from_url else request.cookies.get(BMS_MKT_COOKIE)
+    if mkt and bms_session.valid_token(mkt):
+        bms_session.marketplace_token.set(mkt)
+    if from_url and request.method == "GET":
+        # เก็บ id ไว้ใน cookie แล้วตัดออกจาก URL — ไม่ให้ค้างในประวัติ/ลิงก์ที่แชร์ต่อ
+        args = request.args.to_dict(flat=False)
+        for secret in ("bms-session-id", "marketplace_token", "marketplace-token"):
+            args.pop(secret, None)
+        target = url_for(request.endpoint, **(request.view_args or {}), **args) if request.endpoint else "/"
+        resp = redirect(target)
+        resp.set_cookie(BMS_COOKIE, sid, max_age=bms_session.MAX_AGE, httponly=True,
+                        secure=request.is_secure, samesite="Lax")
+        if bms_session.marketplace_token.get():
+            resp.set_cookie(BMS_MKT_COOKIE, bms_session.marketplace_token.get(), max_age=bms_session.MAX_AGE,
+                            httponly=True, secure=request.is_secure, samesite="Lax")
+        else:
+            resp.delete_cookie(BMS_MKT_COOKIE)
+        return resp
+    return None
+
+
+@app.errorhandler(bms_session.SessionError)
+def _bms_expired(exc):
+    return _bms_page(str(exc), 401)
+
+
+@app.errorhandler(bms_session.TruncatedResult)
+def _bms_truncated(exc):
+    return _bms_page(str(exc), 413)
+
+
+def _lan_only_page(what):
+    return (f"หน้า{what}เปิดได้เฉพาะเครื่องในเครือข่ายของโรงพยาบาล — "
+            "ดูแดชบอร์ดสรุปได้ตามปกติ", 403, {"Content-Type": "text/plain; charset=utf-8"})
+
+
+@app.after_request
+def _security_headers(resp):
+    """ห้ามเบราว์เซอร์เดาชนิดไฟล์ และไม่ส่ง URL (ซึ่งมีช่วงวันที่/แผนก) ไปเว็บอื่น
+    (ไม่ใส่ X-Frame-Options — HOSxP อาจเปิดหน้านี้ในกรอบของโปรแกรม ตั้งที่ proxy ได้ถ้าไม่ใช้)"""
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "same-origin")
+    return resp
 
 
 @app.route("/cases")
 def cases_page():
     """ดูรายเคส (drill down) จากบล็อกบนแดชบอร์ด"""
+    if not _drilldown_allowed():
+        return _lan_only_page("ดูรายเคส")
     d1, d2, warn = _params()
     dep = request.args.get("dep", "")
     dep = dep if re.fullmatch(r"[0-9A-Za-z]{1,10}", dep) else ""
@@ -244,16 +379,22 @@ def help_page():
 @app.route("/help.pdf")
 def help_pdf():
     """คู่มือฉบับพิมพ์ (A4) — เรนเดอร์หน้า /help ด้วย chromium headless"""
+    if not EXPORT_ENABLED:
+        return {"error": "ปิดการส่งออกไฟล์ในโหมดนี้ — ใช้คำสั่งพิมพ์ของเบราว์เซอร์แทน"}, 404
     url = f"http://127.0.0.1:{os.getenv('PORT', '5900')}/help?print=1"
-    if not _render_lock.acquire(timeout=90):
-        return {"error": "มีงานส่งออกอื่นค้างอยู่ ลองใหม่อีกครั้ง"}, 503
+    name = f"OPD_Dashboard_manual_{VERSION}.pdf"
+    blob = _export_cache.get(name, EXPORT_CACHE_TTL)
+    if blob is not None:
+        return send_file(BytesIO(blob), mimetype="application/pdf", as_attachment=True, download_name=name)
+    if not _render_lock.acquire(timeout=EXPORT_WAIT):
+        return _busy()
     try:
         with tempfile.TemporaryDirectory() as tmp:
             out = os.path.join(tmp, "manual.pdf")
             render.to_pdf(render.find_browser(), url, out)
             blob = open(out, "rb").read()
-        return send_file(BytesIO(blob), mimetype="application/pdf", as_attachment=True,
-                         download_name=f"OPD_Dashboard_manual_{VERSION}.pdf")
+        _export_cache.set(name, blob)
+        return send_file(BytesIO(blob), mimetype="application/pdf", as_attachment=True, download_name=name)
     except (Exception, SystemExit) as e:        # find_browser() ไม่พบ chromium = SystemExit
         app.logger.exception("help pdf failed")
         return {"error": f"สร้าง PDF ไม่สำเร็จ: {type(e).__name__}"}, 500
@@ -264,6 +405,8 @@ def help_pdf():
 @app.route("/check")
 def check_page():
     """ตรวจความพร้อมของข้อมูล — คอลัมน์เวลาใน service_time มีข้อมูลแค่ไหน (ค่าเริ่มต้น 7 วันล่าสุด)"""
+    if not _drilldown_allowed():
+        return _lan_only_page("ตรวจข้อมูล")
     d1, d2, warn = _params()
     if not request.args.get("d1"):
         d1 = (date.fromisoformat(d2) - timedelta(days=6)).isoformat()
@@ -330,8 +473,10 @@ class _RenderLock:
         self._fd = None
 
     def acquire(self, timeout):
+        """timeout = 0 → ไม่รอเลย (ไม่ว่าง = คืน False ทันที)"""
         deadline = time.monotonic() + timeout
-        if not self._thread.acquire(timeout=timeout):
+        got = self._thread.acquire(timeout=timeout) if timeout > 0 else self._thread.acquire(blocking=False)
+        if not got:
             return False
         if fcntl is None:
             return True
@@ -358,6 +503,21 @@ class _RenderLock:
 
 _render_lock = _RenderLock(os.path.join(tempfile.gettempdir(), "opd_dashboard_render.lock"))
 
+#: ส่งออก PNG/JPG/PDF ใช้ chromium เรนเดอร์หน้าของแอปเอง — โหมด bms ปิด (container ไม่มี chromium
+#: และหน้าที่เรนเดอร์ภายในไม่มี session ของผู้ใช้) · ผู้ใช้สั่งพิมพ์จากเบราว์เซอร์แทนได้
+EXPORT_ENABLED = db.MODE != "bms" and os.getenv("OPD_EXPORT", "1") != "0"
+
+#: รอคิวส่งออกได้นานสุดกี่วินาที — ค่าเริ่มต้น 0 = ไม่รอ ตอบ "ไม่ว่าง" ทันที
+#: (เดิมรอ 90 วินาที: คนบนอินเทอร์เน็ตยิงส่งออกพร้อมกัน 3–4 ครั้งก็กิน worker ของ gunicorn หมดจนเว็บค้าง)
+EXPORT_WAIT = int(os.getenv("OPD_EXPORT_WAIT", "0"))
+#: ไฟล์ที่ส่งออกแล้วเก็บไว้ให้คนถัดไปที่ขอช่วงเดียวกัน — ไม่ต้องเปิด chromium ซ้ำ
+EXPORT_CACHE_TTL = int(os.getenv("OPD_EXPORT_CACHE_TTL", "300"))
+_export_cache = TTLCache(maxsize=8)
+
+
+def _busy():
+    return ({"error": "กำลังส่งออกไฟล์ของผู้ใช้อื่นอยู่ ลองใหม่ในอีกครู่"}, 503, {"Retry-After": "30"})
+
 MIME = {"png": "image/png", "jpg": "image/jpeg", "pdf": "application/pdf"}
 
 
@@ -367,16 +527,19 @@ def export(fmt):
 
     เรียกหน้าเดิมของตัวเองด้วย ?print=1 (ซ่อนแถบเครื่องมือ) แล้วถ่ายภาพ
     """
-    if fmt not in MIME:
-        return {"error": "รองรับเฉพาะ png, jpg, pdf"}, 404
+    if fmt not in MIME or not EXPORT_ENABLED:
+        return {"error": "รองรับเฉพาะ png, jpg, pdf" if EXPORT_ENABLED else "ปิดการส่งออกไฟล์ในโหมดนี้"}, 404
 
     d1, d2, _ = _params()
     qs = urllib.parse.urlencode({"d1": d1, "d2": d2, "print": "1"})
     url = f"http://127.0.0.1:{os.getenv('PORT', '5900')}/?{qs}"
 
     name = f"opd_{d1}_{d2}.{fmt}"
-    if not _render_lock.acquire(timeout=90):
-        return {"error": "มีงานส่งออกอื่นค้างอยู่ ลองใหม่อีกครั้ง"}, 503
+    blob = _export_cache.get(name, EXPORT_CACHE_TTL)
+    if blob is not None:
+        return send_file(BytesIO(blob), mimetype=MIME[fmt], as_attachment=True, download_name=name)
+    if not _render_lock.acquire(timeout=EXPORT_WAIT):
+        return _busy()
     try:
         with tempfile.TemporaryDirectory() as tmp:
             out = os.path.join(tmp, name)
@@ -384,6 +547,7 @@ def export(fmt):
             # อ่านใส่หน่วยความจำก่อนออกจาก with — send_file ยังถือ handle ค้างไว้
             # ทำให้ลบโฟลเดอร์ชั่วคราวไม่ได้ (PermissionError บน Windows)
             blob = open(out, "rb").read()
+        _export_cache.set(name, blob)
         return send_file(BytesIO(blob), mimetype=MIME[fmt],
                          as_attachment=True, download_name=name)
     except Exception as e:                      # chromium ไม่มี/ตาย/หมดเวลา

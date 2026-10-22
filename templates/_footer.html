@@ -2,7 +2,7 @@
 <div class="appinfo">
   <span><b>OPD Dashboard</b> เวอร์ชัน {{ version }}</span>
   <a href="{{ url_for('help_page') }}">📘 คู่มือการใช้งาน</a>
-  <a href="{{ url_for('check_page') }}">🩺 ตรวจข้อมูล</a>
+  {% if drilldown %}<a href="{{ url_for('check_page') }}">🩺 ตรวจข้อมูล</a>{% endif %}
   <span>📞 ติดต่อ: {{ contact }}</span>
   {% if dev_contact and dev_contact != contact %}<span>🛠 ผู้พัฒนา: {{ dev_contact }}</span>{% endif %}
 </div>

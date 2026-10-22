@@ -50,13 +50,15 @@ def _columns(d1, d2):
         where o.vstdate between %(d1)s and %(d2)s""", {"d1": d1, "d2": d2}) or {}
     visits = num(r.get("visits"))
 
-    union = " union all ".join(
-        f"select '{c}' c, s.{c}_dep dep, count(*) n from service_time s "
-        f"where s.vstdate between %(d1)s and %(d2)s and s.{c} is not null group by s.{c}_dep"
-        for c in stmap.ALL)
+    # แบ่งเป็นชุดละ 10 คอลัมน์ — BMS Session API นับตารางทุกครั้งที่อ้างถึง และรับไม่เกิน 20 ต่อคำสั่ง
     by = {}
-    for row in fetch(union, {"d1": d1, "d2": d2}):
-        by.setdefault(row["c"], []).append((num(row["n"]), row["dep"] or ""))
+    for i in range(0, len(stmap.ALL), 10):
+        union = " union all ".join(
+            f"select '{c}' c, s.{c}_dep dep, count(*) n from service_time s "
+            f"where s.vstdate between %(d1)s and %(d2)s and s.{c} is not null group by s.{c}_dep"
+            for c in stmap.ALL[i:i + 10])
+        for row in fetch(union, {"d1": d1, "d2": d2}):
+            by.setdefault(row["c"], []).append((num(row["n"]), row["dep"] or ""))
 
     used = {stmap.phys(c): c for c in stmap.STD if stmap.phys(c)}
     out = []

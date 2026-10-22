@@ -20,6 +20,7 @@ import deps
 import stmap
 from cache import TTLCache
 from db import fetch, num
+from db import tenant as db_tenant
 from queries import MAX_TOTAL, _thai_date
 
 # ------------------------------------------------------------ จุดบริการ
@@ -232,7 +233,8 @@ _cache = TTLCache(maxsize=32)
 
 def build(d):
     today = date.today().isoformat()
-    hit = _cache.get(d, TTL_TODAY if d >= today else TTL_PAST)
+    key = (db_tenant(), d)
+    hit = _cache.get(key, TTL_TODAY if d >= today else TTL_PAST)
     if hit is not None:
         return hit
 
@@ -299,5 +301,5 @@ def build(d):
         "remote": sorted(remote),
         "generated": time.strftime("%H:%M:%S"),
     }
-    _cache.set(d, data)
+    _cache.set(key, data)
     return data

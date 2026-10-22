@@ -4,6 +4,8 @@
   - direct : ต่อ MariaDB ตรง ๆ ด้วย pymysql อ่านค่าจาก .env  (ใช้บนเซิร์ฟเวอร์ production)
   - ssh    : ยิงคำสั่งผ่าน `ssh <host> mariadb hos` แล้วอ่าน TSV  (ใช้ตอน dev บนเครื่องที่ไม่มีรหัส DB)
 
+  - bms    : ผ่าน BMS Session API ของ HOSxP (รันเป็น Add-on บน BMS Marketplace — ดู bms_session.py)
+
 เลือกโหมดด้วย env `OPD_DB_MODE` (default: direct · ssh เมื่อตั้ง OPD_SSH_HOST และไม่มี DB_PASS)
 ข้อมูลใน HOSxP เก็บเป็น tis-620 จึงต้องระบุ charset ให้ถูกทั้งสองทาง
 
@@ -136,8 +138,30 @@ def _fetch_ssh(sql, args):
     return rows
 
 
+def _fetch_bms(sql, args):
+    import bms_session
+
+    # แทนค่าพารามิเตอร์ด้วย escape ของ pymysql (โหมดนี้รับเฉพาะ HOSxP ที่เป็น MySQL/MariaDB)
+    return bms_session.run_sql(_bind(sql, args))
+
+
+def tenant():
+    """รหัสโรงพยาบาลของ request นี้ — ใช้แยกแคชเมื่อหลาย รพ. ใช้แอปเดียวกัน (โหมด bms) · โหมดอื่นคืนสตริงว่าง"""
+    if MODE != "bms":
+        return ""
+    import bms_session
+
+    sess = bms_session.current.get()
+    return sess.hospital_code if sess else ""
+
+
 def fetch(sql, args=None):
-    rows = _fetch_direct(sql, args) if MODE == "direct" else _fetch_ssh(sql, args)
+    if MODE == "bms":
+        rows = _fetch_bms(sql, args)
+    elif MODE == "direct":
+        rows = _fetch_direct(sql, args)
+    else:
+        rows = _fetch_ssh(sql, args)
     return [{k: _clean(v) for k, v in r.items()} for r in rows]
 
 
