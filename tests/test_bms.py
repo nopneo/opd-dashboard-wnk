@@ -166,7 +166,9 @@ def test_export_disabled_and_hidden(bms):
     c.get("/?bms-session-id=sess-aaaa-1111")
     assert c.get("/export.pdf").status_code == 404
     assert c.get("/help.pdf").status_code == 404
-    assert "/export." not in c.get("/").get_data(as_text=True)
+    html = c.get("/").get_data(as_text=True)
+    assert "/export." not in html
+    assert "ส่งออกใช้เวลา" not in html  # ไม่มีปุ่มก็ไม่ต้องบอกเวลาส่งออก
 
 
 def test_drilldown_open_in_bms_mode(bms):

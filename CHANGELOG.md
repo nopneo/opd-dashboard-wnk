@@ -1,5 +1,8 @@
 # ประวัติเวอร์ชัน OPD Dashboard
 
+## 1.3.1 — แก้ข้อความค้างในโหมด Add-on
+1. โหมด `bms` ไม่มีปุ่มส่งออก จึงไม่แสดงข้อความ "ส่งออกใช้เวลา ~10 วินาที" แล้ว (พบตอนทดสอบบน BMS Developer Portal)
+
 ## 1.3.0 — Add-on บน BMS Marketplace (โหมด BMS Session API)
 1. **`OPD_DB_MODE=bms`** — อ่านข้อมูลผ่าน BMS Session API ของ HOSxP แทนการต่อฐานข้อมูลตรง
    (แอปที่ต่อฐานข้อมูลตรงต้องผ่าน Audit จาก BMS) · รันบน BMS Developer Portal ได้ด้วย `Dockerfile`
