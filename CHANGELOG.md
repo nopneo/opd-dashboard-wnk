@@ -2,6 +2,7 @@
 
 ## 1.3.1 — แก้ข้อความค้างในโหมด Add-on
 1. โหมด `bms` ไม่มีปุ่มส่งออก จึงไม่แสดงข้อความ "ส่งออกใช้เวลา ~10 วินาที" แล้ว (พบตอนทดสอบบน BMS Developer Portal)
+2. `Dockerfile` แยกเป็น 2 target: ค่าเริ่มต้น `bms` ไม่ลง chromium (Trivy บน Developer Portal เจอช่องโหว่ 1,143 รายการ ส่วนใหญ่มาจากไลบรารีที่ chromium ดึงมา) · `--target direct` ต่อฐานข้อมูลตรง + chromium สำหรับปุ่มส่งออก · ลงแพตช์ความปลอดภัยของ Debian ตอนบิลด์ (`apt-get upgrade`)
 
 ## 1.3.0 — Add-on บน BMS Marketplace (โหมด BMS Session API)
 1. **`OPD_DB_MODE=bms`** — อ่านข้อมูลผ่าน BMS Session API ของ HOSxP แทนการต่อฐานข้อมูลตรง
