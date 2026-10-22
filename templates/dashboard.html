@@ -61,9 +61,11 @@
 <div class="toolbar">
   {% set q = '?d1=' ~ d.d1 ~ '&d2=' ~ d.d2 %}
   <a class="live-map" href="{{ flow_url }}">🧊 ดู Flow 3D</a>
+  {% if export_enabled %}
   <a class="dl" href="{{ url_for('export', fmt='jpg') }}{{ q }}">⬇ JPG</a>
   <a class="dl" href="{{ url_for('export', fmt='png') }}{{ q }}">⬇ PNG</a>
   <a class="dl" href="{{ url_for('export', fmt='pdf') }}{{ q }}">⬇ PDF</a>
+  {% endif %}
   <span class="hint">ส่งออกใช้เวลา ~10 วินาที</span>
   <span class="stamp">ข้อมูล ณ {{ d.generated_at }}</span>
 </div>

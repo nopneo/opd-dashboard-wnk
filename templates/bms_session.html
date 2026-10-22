@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OPD Dashboard — เชื่อมต่อ HOSxP</title>
+{% include "_icons.html" %}
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="sub-page">
+<div class="sheet">
+  <div class="page-h">
+    <div>
+      <div class="ttl">OPD Dashboard</div>
+      <div class="sub">เวอร์ชัน {{ version }}</div>
+    </div>
+  </div>
+  <section class="block">
+    <div class="body">
+      <p><b>เชื่อมต่อข้อมูล HOSxP ไม่ได้</b></p>
+      <p>{{ msg }}</p>
+      <p class="note">เปิดแอปนี้จาก HOSxP: Application › Tools › BMS Cloud › BMS Marketplace › Add-on ของฉัน ›
+        OPD Dashboard (ต้องเข้าระบบ HOSxP ด้วย ProviderID)</p>
+    </div>
+  </section>
+  {% include "_footer.html" %}
+</div>
+</body>
+</html>

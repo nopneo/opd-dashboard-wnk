@@ -22,10 +22,14 @@ class TTLCache:
             if hit is None:
                 return None
             if time.time() - hit[0] >= ttl:
-                del self._data[key]
-                return None
+                return None         # เก็บไว้ก่อน — get_stale() ใช้ได้ · จำนวนรายการยังถูกจำกัดด้วย maxsize
             self._data.move_to_end(key)
             return hit[1]
+
+    def get_stale(self, key):
+        """(เวลาที่เก็บ, ค่า) แม้หมดอายุแล้ว — ใช้แสดงข้อมูลล่าสุดเมื่อแหล่งข้อมูลล่ม · ไม่มี = None"""
+        with self._lock:
+            return self._data.get(key)
 
     def set(self, key, value):
         with self._lock:

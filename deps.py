@@ -8,6 +8,7 @@ import os
 import re
 import time
 
+import db
 from db import fetch
 
 #: (กลุ่ม, รูปแบบชื่อแผนก) — ตรวจตามลำดับ ตัวแรกที่ตรงชนะ (ตัวพิมพ์เล็ก/ใหญ่ไม่มีผล)
@@ -31,7 +32,12 @@ RULES = [
 _RX = [(g, re.compile(p, re.I)) for g, p in RULES]
 
 _TTL = 3600
-_cache = {"t": 0, "deps": {}, "hosp": None}
+#: แยกตามโรงพยาบาล (db.tenant()) — โหมด bms ใช้แอปเดียวหลาย รพ.
+_caches = {}
+
+
+def _cur():
+    return _caches.setdefault(db.tenant(), {"t": 0, "deps": {}, "hosp": None})
 
 
 def classify(name):
@@ -58,6 +64,7 @@ def _overrides():
 
 
 def _load():
+    _cache = _cur()
     if _cache["t"] and time.time() - _cache["t"] < _TTL:     # โหลดแล้ว (แม้ไม่มีแผนกเลย)
         return
     rows = fetch("select depcode, department from kskdepartment")
@@ -65,31 +72,46 @@ def _load():
             for r in rows}
     for code, group in _overrides().items():
         deps.setdefault(code, {"name": code})["group"] = group
-    try:
-        h = fetch("select hospitalcode, hospitalname from opdconfig limit 1")
-        hosp = h[0] if h else None
-    except Exception:           # บางรุ่นไม่มีตาราง opdconfig
-        hosp = None
+    hosp = None
+    if db.MODE == "bms":
+        # BMS Session API ห้ามอ่าน opdconfig และ session มีแค่รหัส รพ. (user_info.location คือที่ทำงาน
+        # ของผู้ใช้ ไม่ใช่ชื่อ รพ.) → หาชื่อจากตาราง hospcode ด้วยรหัสใน session
+        import bms_session
+
+        sess = bms_session.current.get()
+        if sess and sess.hospital_code:
+            try:
+                h = fetch("select hospcode hospitalcode, name hospitalname from hospcode "
+                          "where hospcode = %(c)s limit 1", {"c": sess.hospital_code})
+                hosp = h[0] if h else {"hospitalcode": sess.hospital_code}
+            except Exception:
+                hosp = {"hospitalcode": sess.hospital_code}
+    else:
+        try:
+            h = fetch("select hospitalcode, hospitalname from opdconfig limit 1")
+            hosp = h[0] if h else None
+        except Exception:       # บางรุ่นไม่มีตาราง opdconfig
+            hosp = None
     _cache.update(t=time.time(), deps=deps, hosp=hosp)
 
 
 def group_of(depcode):
     _load()
-    return (_cache["deps"].get(depcode or "") or {}).get("group")
+    return (_cur()["deps"].get(depcode or "") or {}).get("group")
 
 
 def name_of(depcode):
     _load()
-    return (_cache["deps"].get(depcode or "") or {}).get("name") or (depcode or "")
+    return (_cur()["deps"].get(depcode or "") or {}).get("name") or (depcode or "")
 
 
 def codes_in(group):
     _load()
-    return sorted(c for c, d in _cache["deps"].items() if d.get("group") == group)
+    return sorted(c for c, d in _cur()["deps"].items() if d.get("group") == group)
 
 
 def hospital_name():
-    """ชื่อโรงพยาบาล: env OPD_HOSPITAL_NAME > opdconfig.hospitalname ของ HOSxP"""
+    """ชื่อโรงพยาบาล: env OPD_HOSPITAL_NAME > (โหมด bms) ชื่อจาก session > opdconfig.hospitalname ของ HOSxP"""
     env = os.getenv("OPD_HOSPITAL_NAME")
     if env:
         return env
@@ -97,5 +119,7 @@ def hospital_name():
         _load()
     except Exception:
         return "โรงพยาบาล"
-    h = _cache["hosp"] or {}
-    return h.get("hospitalname") or "โรงพยาบาล"
+    h = _cur()["hosp"] or {}
+    if h.get("hospitalname"):
+        return h["hospitalname"]
+    return f"โรงพยาบาล {h['hospitalcode']}" if h.get("hospitalcode") else "โรงพยาบาล"

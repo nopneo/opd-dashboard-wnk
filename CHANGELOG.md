@@ -1,5 +1,18 @@
 # ประวัติเวอร์ชัน OPD Dashboard
 
+## 1.3.0 — Add-on บน BMS Marketplace (โหมด BMS Session API)
+1. **`OPD_DB_MODE=bms`** — อ่านข้อมูลผ่าน BMS Session API ของ HOSxP แทนการต่อฐานข้อมูลตรง
+   (แอปที่ต่อฐานข้อมูลตรงต้องผ่าน Audit จาก BMS) · รันบน BMS Developer Portal ได้ด้วย `Dockerfile`
+   - HOSxP เปิดแอปพร้อม `?bms-session-id=` → แลกเป็น tunnel URL + token ที่ `hosxp.net/phapi/PasteJSON`
+     แล้วเก็บ id ใน cookie (HttpOnly) และตัดออกจาก URL · token ส่งทาง `Authorization: Bearer` เท่านั้น
+   - ใช้ได้หลายโรงพยาบาลพร้อมกัน: แคชแยกตามรหัส รพ. · ชื่อ รพ. หาจากตาราง `hospcode` ด้วยรหัสใน session
+     (API ห้ามอ่าน `opdconfig` และ session ไม่มีชื่อ รพ.) · `marketplace_token` ที่ HOSxP ต่อท้ายถูกตัดออกจาก URL ด้วย
+   - access log ใน container บันทึกแค่ path ไม่มี query string (กัน bms-session-id หลุดลง log)
+   - ส่งคำสั่งได้เฉพาะ `https://*.hosxp.net` (กัน session ปลอมพาไปยิงที่อื่น) · รองรับเฉพาะ MySQL/MariaDB
+   - ผลลัพธ์ถูกตัด (`truncated`) = แจ้งให้เลือกช่วงสั้นลง ไม่คำนวณยอดจากข้อมูลที่ขาด
+   - ปิดปุ่มส่งออก PNG/JPG/PDF ในโหมดนี้ (ใช้คำสั่งพิมพ์ของเบราว์เซอร์แทน)
+2. โหมดเดิม (direct / ssh) ทำงานเหมือนเดิมทุกอย่าง
+
 ## 1.2.4 (21 ต.ค. 2569) — ความปลอดภัยเมื่อเปิดผ่านอินเทอร์เน็ต
 1. **ส่งออก PNG/JPG/PDF ไม่ทำให้เว็บค้าง** — ไม่ว่างตอบ 503 ทันที (เดิมรอได้ 90 วินาที ยิงพร้อมกัน 3–4 ครั้ง
    ก็กิน worker หมด) และเก็บไฟล์ที่ส่งออกแล้ว 5 นาทีให้คนที่ขอช่วงเดียวกัน (`OPD_EXPORT_WAIT`, `OPD_EXPORT_CACHE_TTL`)
