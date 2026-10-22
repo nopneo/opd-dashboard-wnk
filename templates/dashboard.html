@@ -65,8 +65,8 @@
   <a class="dl" href="{{ url_for('export', fmt='jpg') }}{{ q }}">⬇ JPG</a>
   <a class="dl" href="{{ url_for('export', fmt='png') }}{{ q }}">⬇ PNG</a>
   <a class="dl" href="{{ url_for('export', fmt='pdf') }}{{ q }}">⬇ PDF</a>
-  {% endif %}
   <span class="hint">ส่งออกใช้เวลา ~10 วินาที</span>
+  {% endif %}
   <span class="stamp">ข้อมูล ณ {{ d.generated_at }}</span>
 </div>
 
