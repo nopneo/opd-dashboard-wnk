@@ -26,7 +26,7 @@ for i, m in enumerate(marks, start=1):
     d = int((m["t"] - rec0 + AUDIO_LEAD) * 1000)
     fc.append(f"[{i}:a]adelay={d}|{d},aformat=sample_rates=48000:channel_layouts=stereo[a{i}]")
 fc.append("".join(f"[a{i}]" for i in range(1, len(marks) + 1)) +
-          f"amix=inputs={len(marks)}:normalize=0:dropout_transition=0,volume=1.75[a]")
+          f"amix=inputs={len(marks)}:normalize=0:dropout_transition=0,alimiter=limit=0.95[a]")
 total = end - rec0
 cmd += ["-filter_complex", ";".join(fc), "-map", "[v]", "-map", "[a]",
         "-c:v", "libx264", "-preset", "medium", "-crf", "19", "-movflags", "+faststart",
