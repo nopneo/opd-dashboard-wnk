@@ -50,8 +50,9 @@ CMD ["sh", "-c", "exec gunicorn --bind 0.0.0.0:${PORT} --workers 2 --threads 8 -
 # ---- direct: ต่อฐานข้อมูลตรง + chromium สำหรับส่งออก PNG/JPG/PDF (render.py)
 FROM base AS direct
 USER root
-# font-noto-thai: ฟอนต์ไทยสำรองของ Chromium
-RUN apk add --no-cache chromium font-noto-thai
+# font-noto-thai: ฟอนต์ไทยสำรองของ Chromium · font-noto-emoji: ไอคอน emoji ในหน้า
+# font-dejavu: สัญลักษณ์ที่ไม่ใช่ emoji เช่น ⟳ (ไม่มีฟอนต์ = ขึ้นเป็นกล่อง □ ในไฟล์ส่งออก)
+RUN apk add --no-cache chromium font-noto-thai font-noto-emoji font-dejavu
 # แคชเท่าค่าปกติของแอป (ฐานข้อมูลตรงรับภาระได้มากกว่า ข้อมูลสดกว่า)
 ENV OPD_DB_MODE=direct \
     OPD_CACHE_TTL=120 \

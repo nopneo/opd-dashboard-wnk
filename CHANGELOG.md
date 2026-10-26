@@ -1,5 +1,12 @@
 # ประวัติเวอร์ชัน OPD Dashboard
 
+## 1.3.2 (26 ต.ค. 2569) — ติดตั้งด้วย Docker
+1. **คู่มือ [INSTALL_DOCKER.md](INSTALL_DOCKER.md)** + `docker-compose.yml` สำหรับติดตั้งในโรงพยาบาล (target `direct` ต่อฐานข้อมูลตรง)
+   — `DB_HOST` / GRANT แยกตามที่อยู่ของฐานข้อมูล, ไฟล์โลโก้และผัง Flow 3D ผ่าน volume, ตารางแก้ปัญหา
+2. container ปิด sandbox ของ chromium ใน `docker-compose.yml` (`OPD_CHROME_NO_SANDBOX=1`) — เดิมปุ่มส่งออกล้ม (SIGABRT) ใน container ทั่วไป
+3. image `direct` เพิ่มฟอนต์ `font-noto-emoji` และ `font-dejavu` — ไฟล์ส่งออกเดิมแสดงไอคอน (⬇ ⏳ ⟳) เป็นกล่อง □
+4. ชุดติดตั้ง zip มี `Dockerfile`, `.dockerignore`, `docker-compose.yml`, `INSTALL_DOCKER.md`
+
 ## 1.3.1 — แก้ข้อความค้างในโหมด Add-on
 1. โหมด `bms` ไม่มีปุ่มส่งออก จึงไม่แสดงข้อความ "ส่งออกใช้เวลา ~10 วินาที" แล้ว (พบตอนทดสอบบน BMS Developer Portal)
 2. `Dockerfile` แยกเป็น 2 target: ค่าเริ่มต้น `bms` ไม่ลง chromium (Trivy บน Developer Portal เจอช่องโหว่ 1,143 รายการ ส่วนใหญ่มาจากไลบรารีที่ chromium ดึงมา) · `--target direct` ต่อฐานข้อมูลตรง + chromium สำหรับปุ่มส่งออก · ลงแพตช์ความปลอดภัยของ Debian ตอนบิลด์ (`apt-get upgrade`)

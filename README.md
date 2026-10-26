@@ -1,7 +1,7 @@
 # OPD Dashboard — แดชบอร์ดบริหารจัดการผู้ป่วยนอก (รพ.วังน้ำเขียว)
 
-> **เวอร์ชัน 1.3.1** — ใช้ได้ทุกโรงพยาบาลที่ใช้ HOSxP · **ดาวน์โหลดชุดติดตั้ง: [Releases](https://github.com/nopneo/opd-dashboard-wnk/releases/latest)** ·
-> ติดตั้งสำหรับ รพ.อื่น: [INSTALL.md](INSTALL.md) ·
+> **เวอร์ชัน 1.3.2** — ใช้ได้ทุกโรงพยาบาลที่ใช้ HOSxP · **ดาวน์โหลดชุดติดตั้ง: [Releases](https://github.com/nopneo/opd-dashboard-wnk/releases/latest)** ·
+> ติดตั้งสำหรับ รพ.อื่น: [INSTALL.md](INSTALL.md) · ด้วย Docker: [INSTALL_DOCKER.md](INSTALL_DOCKER.md) ·
 > สร้างชุดติดตั้ง `python build_dist.py` → `dist/opd_dashboard-<เวอร์ชัน>.zip` · การเปลี่ยนแปลง: [CHANGELOG.md](CHANGELOG.md)
 > ไฟล์นี้บันทึกรายละเอียดการติดตั้งที่ รพ.วังน้ำเขียว (ผู้พัฒนา)
 

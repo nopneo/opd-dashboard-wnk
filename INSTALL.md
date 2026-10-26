@@ -7,6 +7,7 @@
 
 **ในชุดติดตั้ง:** โค้ดแอป · `INSTALL.md` (ไฟล์นี้) · `OPD_Dashboard_manual.pdf` (คู่มือผู้ใช้ฉบับพิมพ์ ฉบับล่าสุดดาวน์โหลดได้จากปุ่ม ⬇ PDF ในหน้าคู่มือ)
 · `flow_layout.example.json` (ผังอาคารตัวอย่างของ Flow 3D) · `CHANGELOG.md`
+· `Dockerfile`, `docker-compose.yml`, `INSTALL_DOCKER.md` (ติดตั้งด้วย Docker)
 
 **ขั้นตอนโดยย่อ:** ติดตั้ง (ข้อ 2 หรือ 3) → ใส่ค่าฐานข้อมูลใน `.env` → เปิดหน้า **`/check`** ตรวจข้อมูล (ข้อ 6)
 → ตั้ง `OPD_ST_MAP` ถ้าหน้านั้นแจ้ง → (ถ้าต้องการ) ปรับผัง Flow 3D (ข้อ 7)
@@ -29,8 +30,10 @@ GRANT SELECT ON hos.* TO 'opd_ro'@'<IP เซิร์ฟเวอร์แอ�
 
 ## 2. ติดตั้งบน Linux
 
+> **มี Docker อยู่แล้ว?** ข้ามข้อ 2–3 ไปใช้ [INSTALL_DOCKER.md](INSTALL_DOCKER.md) — ไม่ต้องลง Python / Chromium เอง
+
 ```bash
-sudo unzip opd_dashboard-1.2.4.zip -d /opt && cd /opt/opd_dashboard
+sudo unzip opd_dashboard-1.3.2.zip -d /opt && cd /opt/opd_dashboard
 sudo useradd --system --home-dir /opt/opd_dashboard --shell /sbin/nologin opd   # ไม่รันแอปด้วย root
 sudo python3 -m venv .venv
 sudo .venv/bin/pip install -r requirements.txt
