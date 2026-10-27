@@ -86,3 +86,11 @@ def test_check_page_has_audit_section(client):
 ])
 def test_setup_check_flags_write_privileges(lines, risky):
     assert setup_check.risky_privs(lines) == risky
+
+
+def test_setup_check_ignores_write_privileges_on_other_databases():
+    lines = ["GRANT SELECT ON `hos`.* TO `nop`@`30.25.1.%`",
+             "GRANT SELECT, INSERT, UPDATE, DELETE ON `test`.* TO `nop`@`30.25.1.%`"]
+    assert setup_check.risky_privs(lines, "hos") == []
+    assert setup_check.risky_privs(lines, "test") == ["DELETE", "INSERT", "UPDATE"]
+    assert setup_check.risky_privs(["GRANT INSERT ON *.* TO `x`@`%`"], "hos") == ["INSERT"]

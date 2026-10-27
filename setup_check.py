@@ -44,12 +44,16 @@ def head(title):
     print(f"\n=== {title} " + "=" * max(0, 60 - len(title)))
 
 
-def risky_privs(grant_lines):
-    """บรรทัดผลของ SHOW GRANTS → สิทธิ์ที่เกินกว่าอ่านอย่างเดียว (เช่น INSERT, ALL PRIVILEGES)"""
+def risky_privs(grant_lines, dbname=None):
+    """บรรทัดผลของ SHOW GRANTS → สิทธิ์ที่เกินกว่าอ่านอย่างเดียว (เช่น INSERT, ALL PRIVILEGES)
+    dbname = นับเฉพาะสิทธิ์บนฐานข้อมูลนี้และ *.* (สิทธิ์เขียนบนฐานอื่น เช่น `test` ไม่กระทบ HOSxP)"""
     out = set()
     for line in grant_lines:
-        m = re.match(r"\s*GRANT\s+(.+?)\s+ON\s", line or "", re.I)
+        m = re.match(r"\s*GRANT\s+(.+?)\s+ON\s+(\S+)", line or "", re.I)
         if not m:
+            continue
+        target = m.group(2).split(".")[0].strip("`'\"")
+        if dbname and target not in ("*", dbname):
             continue
         privs = re.sub(r"\(.*?\)", "", m.group(1))          # SELECT (col1, col2) → SELECT
         for p in privs.split(","):
@@ -143,12 +147,12 @@ def check_db():
 
     try:
         rows = fetch("show grants for current_user()")
-        risky = risky_privs([next(iter(x.values()), "") for x in rows])
+        risky = risky_privs([next(iter(x.values()), "") for x in rows], r.get("d"))
         if risky:
             say("warn", "บัญชีนี้มีสิทธิ์เกินกว่าอ่านอย่างเดียว: " + ", ".join(risky) +
                 " — ควรใช้บัญชีที่มีแค่ SELECT (INSTALL.md ข้อ 1)")
         else:
-            say("ok", "บัญชีฐานข้อมูลอ่านได้อย่างเดียว (SELECT)")
+            say("ok", f"บัญชีฐานข้อมูลอ่าน {r.get('d')} ได้อย่างเดียว (SELECT)")
     except Exception:
         say("info", "อ่านสิทธิ์ของบัญชีไม่ได้ (SHOW GRANTS) — ข้าม")
 
