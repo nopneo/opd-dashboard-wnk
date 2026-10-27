@@ -162,9 +162,9 @@ def kpi_summary(d1, d2, st):
 
 def hourly(d1, d2, days):
     rows = fetch(f"""
-        select hour(o.vsttime) h, count(*) c, sum(o.ovstist = '02') appt
+        select hour(o.vsttime) h, count(*) c, sum(o.ovstist in %(appt)s) appt
         from ovst o where o.vstdate between %(d1)s and %(d2)s and o.vsttime is not null
-        group by h""", {"d1": d1, "d2": d2})
+        group by h""", {"d1": d1, "d2": d2, "appt": APPT_CODES})
     by_h = {num(r["h"]): r for r in rows}
     out = []
     for h in range(HOUR_FROM, HOUR_TO + 1):
@@ -182,6 +182,10 @@ def hourly(d1, d2, days):
 
 #: แผนกที่ไม่ควรเป็นแผนกส่งคิวแรกของ visit (ovst.main_dep) — เจอเมื่อห้องบัตรเลือกแผนกผิด
 #: ผู้ป่วยกลุ่มนี้มักยังผ่านคัดกรอง/พบแพทย์ตามปกติ จึงแยกเป็นแถว "ส่งคิวไม่ตรง" ไม่ปนกับแผนกจริง
+#: ovst.ovstist ที่หมายถึง "มาตามนัด" — HOSxP มาตรฐานคือ 02 (นัดมา) แต่บาง รพ. เพิ่มรหัสเอง
+#: ตรวจได้ที่หน้า /check · env OPD_APPT_CODES=02,08
+APPT_CODES = [c.strip() for c in os.getenv("OPD_APPT_CODES", "02").split(",") if c.strip()] or ["02"]
+
 MISROUTE_GROUPS = {"RX", "CASH"}
 MISROUTE_CODES = {"999"}                 # 999 = กลับบ้าน
 #: แจ้งในบล็อก 17 เมื่อส่งคิวไม่ตรงอย่างน้อยกี่ราย และกี่ % ของ visit
@@ -268,12 +272,13 @@ def appointments(d1, d2, total):
     อัตราผิดนัด = นัดที่ไม่มา ÷ นัดทั้งหมด (oapp.nextdate ในช่วงที่เลือก)
     "มา" = มี visit ของ HN นั้นในวันนัด · นับเฉพาะวันที่ผ่านไปแล้ว — นัดของวันนี้ยังมาได้อีก
     จึงแสดงแยกเป็น "นัดวันนี้" ไม่นับเป็นผิดนัด
-    Walk-in / มาตามนัด ของ visit (ovst.ovstist = '02') แสดงแยกเป็นข้อมูลประกอบ
+    Walk-in / มาตามนัด ของ visit (ovst.ovstist ใน APPT_CODES) แสดงแยกเป็นข้อมูลประกอบ
     """
     today = date.today().isoformat()
     appt_visits = num(fetch_one(f"""
         select count(*) c from ovst o
-        where o.vstdate between %(d1)s and %(d2)s and o.ovstist = '02'""", {"d1": d1, "d2": d2}).get("c"))
+        where o.vstdate between %(d1)s and %(d2)s and o.ovstist in %(appt)s""",
+        {"d1": d1, "d2": d2, "appt": APPT_CODES}).get("c"))
     r = fetch_one(f"""
         select sum(a.nextdate < %(today)s) booked,
           sum(a.nextdate < %(today)s and exists(select 1 from ovst o
@@ -645,7 +650,7 @@ def cases(d1, d2, dep=None, step=None, over=False, with_hn=False):
         order = f"g{step} desc"
     rows = fetch(f"""
         select o.hn, o.vstdate d, time_format(o.vsttime, '%%H:%%i') t, o.main_dep dep,
-          k.department dname, pt.name right_name, o.ovstist = '02' appt, o.an is not null adm,
+          k.department dname, pt.name right_name, o.ovstist in %(appt)s appt, o.an is not null adm,
           {', '.join(cols)},
           case when time_to_sec(timediff({FINISH}, s.vsttime))/60 between 1 and {MAX_TOTAL}
                then round(time_to_sec(timediff({FINISH}, s.vsttime))/60) end tt
@@ -654,7 +659,7 @@ def cases(d1, d2, dep=None, step=None, over=False, with_hn=False):
           left join kskdepartment k on k.depcode = o.main_dep
           left join pttype pt on pt.pttype = o.pttype
         where {' and '.join(where)}
-        order by {order} limit {CASE_LIMIT + 1}""", {"d1": d1, "d2": d2, "dep": dep})
+        order by {order} limit {CASE_LIMIT + 1}""", {"d1": d1, "d2": d2, "dep": dep, "appt": APPT_CODES})
     out = []
     for r in rows[:CASE_LIMIT]:
         item = {"d": str(r["d"]), "t": r["t"] or "", "dep": r["dep"] or "",

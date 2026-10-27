@@ -27,6 +27,24 @@
   </form>
   {% if warn %}<div class="warn">⚠ {{ warn }}</div>{% endif %}
 
+  {% set A = c.audit %}
+  <div class="audit-sum {{ 'bad' if A.issues else 'good' }}">
+    {% if A.issues %}
+    <div class="h">⚠ พบ {{ A.issues | length }} เรื่องที่ควรตรวจก่อนนำตัวเลขไปใช้</div>
+    <ul>{% for i in A.issues %}<li>{{ i }}</li>{% endfor %}</ul>
+    {% else %}
+    <div class="h">✅ ไม่พบรหัสหรือข้อมูลที่ผิดปกติในช่วงที่ตรวจ</div>
+    {% endif %}
+    <p class="note">ผลอัตโนมัติตรวจได้แค่สิ่งที่ “ดูผิดปกติ” — ให้เทียบตัวเลขบนแดชบอร์ดกับรายงานเดิมของโรงพยาบาลอย่างน้อย 1–2 สัปดาห์ก่อนใช้จริง</p>
+    {% if A.audited %}
+    <p>✅ ผู้ดูแลยืนยันแล้ว (<code>OPD_DATA_AUDITED=1</code>) — แดชบอร์ดไม่แสดงแถบเตือน</p>
+    {% else %}
+    <p><button type="button" class="audit-ok" data-audit-key="opd-audited:{{ hospital }}">✔ ยืนยันว่าตรวจแล้ว (เฉพาะเบราว์เซอร์นี้)</button>
+      <span class="audit-done" hidden>ยืนยันแล้วในเบราว์เซอร์นี้ — <a href="#" class="audit-undo">ยกเลิก</a></span><br>
+      <small>ยืนยันให้ทุกเครื่อง: ตั้ง <code>OPD_DATA_AUDITED=1</code> ใน <code>.env</code> แล้วรีสตาร์ตแอป</small></p>
+    {% endif %}
+  </div>
+
   <div class="manual">
     <p>แดชบอร์ดคิดเวลาแต่ละขั้นจากตาราง <code>service_time</code> ของ HOSxP
       แต่ละโรงพยาบาลตั้งค่าเองว่าจุดบริการไหนกดเวลาลงคอลัมน์ไหน — ถ้าขั้นไหนขึ้น <span class="pill high">แทบไม่มี</span>
@@ -90,6 +108,36 @@
     </table></div>
     <p class="note">แดชบอร์ดเวอร์ชันนี้คิดเวลารอจาก service_time เท่านั้น ตารางอื่นแสดงไว้ประกอบการตัดสินใจ</p>
 
+    <h2 id="audit">5. Data Audit — รหัสที่แอปใช้ เทียบกับข้อมูลของโรงพยาบาลนี้</h2>
+    {% set AS = {'ok': ('ok', 'ตรง'), 'warn': ('mid', 'ควรตรวจ'), 'bad': ('high', 'ไม่ตรง')} %}
+    <div class="tw"><table class="t">
+      <tr><th>เรื่อง</th><th>แอปใช้</th><th>พบในข้อมูล</th><th>มีผลกับ</th><th>สถานะ</th></tr>
+      {% for x in A.codes %}
+      {% if x.error %}<tr><td colspan="5"><small>ตรวจบางข้อไม่ได้ ({{ x.error }}) — ตารางไม่มีในรุ่นนี้หรือไม่ได้รับสิทธิ์</small></td></tr>
+      {% else %}
+      <tr><td>{{ x.label }}</td><td><code>{{ x.assume }}</code></td>
+        <td>{{ x.found }}{% if x.fix %}<br><small>แก้: <code>{{ x.fix }}</code></small>{% endif %}</td>
+        <td><small>{{ x.impact }}</small></td>
+        <td><span class="pill {{ AS[x.status][0] }}">{{ AS[x.status][1] }}</span></td></tr>
+      {% endif %}
+      {% endfor %}
+    </table></div>
+
+    <h3>กลุ่มของแต่ละแผนก (จัดจากชื่อใน kskdepartment)</h3>
+    {% if A.deps.error %}<p class="note">อ่านรายการแผนกไม่ได้ ({{ A.deps.error }})</p>{% else %}
+    <div class="tw"><table class="t dense">
+      <tr><th>รหัส</th><th>ชื่อแผนก</th><th>visit</th><th>%</th><th>กลุ่ม</th><th>ผลต่อแดชบอร์ด</th></tr>
+      {% for x in A.deps.rows %}
+      <tr class="{{ 'audit-warn' if x.warn }}"><td><code>{{ x.code or '–' }}</code></td><td>{{ x.name }}</td>
+        <td>{{ x.n | n }}</td><td>{{ x.pct }}%</td>
+        <td>{% if x.group %}<code>{{ x.group }}</code>{% else %}—{% endif %}{% if x.override %} <small>(OPD_DEP_MAP)</small>{% endif %}</td>
+        <td><small>{{ x.label }}</small>{% if x.warn %}<br><b>⚠ ตรวจว่าควรอยู่กลุ่มไหน</b>{% endif %}</td></tr>
+      {% endfor %}
+    </table></div>
+    <p class="note">แผนกที่จัดผิดกลุ่มทำให้ตัวเลขทั้งบล็อกเพี้ยน (เช่น ER ไม่ถูกแยก, คลินิกไปอยู่หน้าห้องตรวจในผังผู้ป่วย)
+      — แก้ด้วย <code>OPD_DEP_MAP=036=SPEC,017=ER</code> · กลุ่มที่ใช้ได้: SCR NCD ARI LAB R1–R5 TELE ER DENT SPEC MH PT TTM RX CASH ADMIN</p>
+    {% endif %}
+
     <h2>วิธีตั้งค่า</h2>
     <ol>
       <li>ดูตารางที่ 3 ว่าจุดบริการแต่ละจุดกดเวลาลงคอลัมน์ไหน</li>
@@ -101,5 +149,22 @@
 
   {% include "_footer.html" %}
 </div>
+<script>
+  // ยืนยันว่าตรวจข้อมูลแล้ว (จำในเบราว์เซอร์นี้) → แดชบอร์ดซ่อนแถบเตือน
+  (function () {
+    var btn = document.querySelector('.audit-ok');
+    if (!btn) return;
+    var key = btn.dataset.auditKey, done = document.querySelector('.audit-done');
+    function show(on) { btn.hidden = on; done.hidden = !on; }
+    try { show(!!localStorage.getItem(key)); } catch (e) {}
+    btn.addEventListener('click', function () {
+      try { localStorage.setItem(key, new Date().toISOString()); show(true); } catch (e) {}
+    });
+    document.querySelector('.audit-undo').addEventListener('click', function (ev) {
+      ev.preventDefault();
+      try { localStorage.removeItem(key); show(false); } catch (e) {}
+    });
+  })();
+</script>
 </body>
 </html>

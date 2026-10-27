@@ -5,8 +5,12 @@
   - ขั้นบริการที่แดชบอร์ดใช้ (stmap.STEPS) อ่านจากคอลัมน์ไหน ครอบคลุมเท่าไร
   - ช่องไหนบนแดชบอร์ดจะขึ้น "–" เพราะไม่มีคู่เวลาให้คำนวณ
   - ข้อเสนอค่า OPD_ST_MAP เมื่อขั้นไหนแทบไม่มีข้อมูล แต่มีคอลัมน์อื่นที่น่าจะใช้แทนได้
+  - Data Audit: แผนกแต่ละรหัสถูกจัดเป็นกลุ่มอะไร และรหัสที่แอปสมมติไว้ (นัด, กลับบ้าน, ผลวินิจฉัยหลัก …)
+    ตรงกับข้อมูลของโรงพยาบาลนี้หรือไม่ — รหัสของแต่ละ รพ. ไม่เหมือนกัน ถ้าไม่ตรง ตัวเลขบนแดชบอร์ดจะเพี้ยน
 แสดงเฉพาะจำนวนนับและชื่อแผนก ไม่มีข้อมูลรายคน
 """
+
+import os
 
 import deps
 import queries
@@ -128,6 +132,156 @@ def _other_sources(d1, d2, visits):
     return out
 
 
+# ------------------------------------------------------------ Data Audit
+
+#: แผนกที่ไม่เข้ากลุ่มใดแต่มี visit อย่างน้อยเท่านี้ (% ของ visit) → ให้ตรวจว่าควรอยู่กลุ่มไหน
+DEP_WARN_PCT = 1.0
+#: เกณฑ์ของรหัสอื่น ๆ (% ของ visit)
+MISSING_WARN_PCT = 5.0       # firstday / สิทธิ ว่างเกินนี้ = ตัวเลขที่เกี่ยวข้องคลาดเคลื่อน
+PDX_WARN_PCT = 80.0          # visit ที่มีวินิจฉัย แต่มีวินิจฉัยหลัก (diagtype 1) น้อยกว่านี้
+HOME_WARN_PCT = 30.0         # visit ที่จบด้วยแผนก 999 (กลับบ้าน) น้อยกว่านี้
+
+#: กลุ่มแผนก → ผลต่อแดชบอร์ด (แสดงในตาราง Data Audit)
+GROUP_LABEL = {
+    "ADMIN": "เวชระเบียน — ไม่ถือเป็นจุดที่ผู้ป่วยอยู่",
+    "SCR": "ซักประวัติ / คัดกรอง", "NCD": "คลินิก NCD", "ARI": "คลินิก ARI", "LAB": "ห้องแล็บ",
+    **{f"R{i}": f"ห้องตรวจ {i}" for i in range(1, 6)},
+    "TELE": "Telemed — ผู้ป่วยไม่อยู่ใน รพ. (ไม่วาดในผังผู้ป่วย)",
+    "ER": "ห้องฉุกเฉิน — แยกออกจากเวลารอ OPD",
+    "DENT": "ทันตกรรม", "SPEC": "ปฐมภูมิ / คลินิกเฉพาะ", "MH": "สุขภาพจิต", "PT": "กายภาพบำบัด",
+    "TTM": "แพทย์แผนไทย",
+    "RX": "ห้องยา — ส่งคิวแรกมาที่นี่นับเป็น “ส่งคิวไม่ตรง”",
+    "CASH": "การเงิน — ส่งคิวแรกมาที่นี่นับเป็น “ส่งคิวไม่ตรง”",
+}
+
+
+def _safe(fn, *args):
+    """ตารางบางตัวไม่มีในบางรุ่น / BMS Session API ไม่อนุญาต → ข้ามข้อนั้น ไม่ให้ทั้งหน้าล้ม"""
+    try:
+        return fn(*args)
+    except Exception as e:
+        return {"error": type(e).__name__}
+
+
+def _dep_audit(d1, d2, visits):
+    """แผนกหลักของ visit (ovst.main_dep) แต่ละรหัสถูกจัดเป็นกลุ่มอะไร"""
+    rows = fetch("""
+        select o.main_dep dep, count(*) n from ovst o
+        where o.vstdate between %(d1)s and %(d2)s group by o.main_dep""", {"d1": d1, "d2": d2})
+    over = deps.overrides()
+    out = []
+    for r in sorted(rows, key=lambda r: -num(r["n"])):
+        code, n = r["dep"] or "", num(r["n"])
+        g = deps.group_of(code)
+        pct = queries._pct(n, visits)
+        home = code in queries.MISROUTE_CODES
+        out.append({
+            "code": code, "name": _dep_name(code), "n": n, "pct": pct, "group": g,
+            "label": ("กลับบ้าน — ส่งคิวแรกมาที่นี่นับเป็น “ส่งคิวไม่ตรง”" if home and not g else
+                      GROUP_LABEL.get(g, "ไม่เข้ากลุ่ม — นับเป็นคลินิก OPD ทั่วไป")),
+            "override": code in over,
+            "warn": g is None and not home and pct >= DEP_WARN_PCT,
+        })
+    return {"rows": out, "warn": [r for r in out if r["warn"]]}
+
+
+def _code_audit(d1, d2, visits):
+    """รหัสที่แอปสมมติไว้ เทียบกับข้อมูลจริงของโรงพยาบาล → [{label, assume, found, status, fix}]"""
+    p = {"d1": d1, "d2": d2, "appt": queries.APPT_CODES}
+    out = []
+
+    # 1. มาตามนัด (ovst.ovstist)
+    def appt():
+        rows = fetch("""
+            select o.ovstist code, i.name, count(*) n from ovst o
+              left join ovstist i on i.ovstist = o.ovstist
+            where o.vstdate between %(d1)s and %(d2)s group by o.ovstist, i.name""", p)
+        used = [r for r in rows if (r["code"] or "") in queries.APPT_CODES]
+        cand = [r for r in rows if (r["code"] or "") not in queries.APPT_CODES and "นัด" in (r["name"] or "")]
+        n = sum(num(r["n"]) for r in used)
+        names = ", ".join(f"{r['code']} {r['name'] or ''}".strip() for r in used) or "ไม่มี visit ด้วยรหัสนี้"
+        st = "bad" if not n else "warn" if cand else "ok"
+        fix = None
+        if cand:
+            fix = "OPD_APPT_CODES=" + ",".join(queries.APPT_CODES + [r["code"] for r in cand])
+        elif not n:
+            fix = "ตรวจตาราง ovstist ว่ารหัสไหนคือ “นัดมา” แล้วตั้ง OPD_APPT_CODES"
+        return {"label": "มาตามนัด (ovst.ovstist)", "assume": ", ".join(queries.APPT_CODES),
+                "found": f"{names} · {queries._pct(n, visits)}% ของ visit"
+                         + (" · มีรหัสอื่นที่ชื่อมีคำว่า “นัด”: " +
+                            ", ".join(f"{r['code']} {r['name']}" for r in cand) if cand else ""),
+                "status": st, "fix": fix,
+                "impact": "บล็อก 2/9 (นัด vs Walk-in), บล็อก 7, หน้ารายเคส"}
+    out.append(_safe(appt))
+
+    # 2. ข้อมูลผู้ป่วย / สิทธิ / กลับบ้าน ในคำสั่งเดียว
+    def basics():
+        r = fetch_one("""
+            select count(*) n, sum(o.cur_dep = '999') home,
+              sum(p.hn is not null and p.firstday is null) nofirst,
+              sum(o.pttype is null or o.pttype = '') nopt
+            from ovst o left join patient p on p.hn = o.hn
+            where o.vstdate between %(d1)s and %(d2)s""", p) or {}
+        n = num(r.get("n"))
+        home_pct, nofirst, nopt = (queries._pct(num(r.get(k)), n) for k in ("home", "nofirst", "nopt"))
+        home_name = deps.name_of("999")
+        return [
+            {"label": "กลับบ้าน (แผนกปัจจุบัน 999)", "assume": "999",
+             "found": f"999 = {home_name if home_name != '999' else 'ไม่มีใน kskdepartment'} · "
+                      f"{home_pct}% ของ visit จบด้วย 999",
+             "status": "bad" if home_name == "999" else "warn" if home_pct < HOME_WARN_PCT else "ok",
+             "fix": None if home_pct >= HOME_WARN_PCT else "ผังผู้ป่วยใช้เวลาส่งกลับบ้านจากรหัสนี้ — ตรวจว่า รพ. ส่งกลับบ้านด้วยรหัสอะไร",
+             "impact": "ผังผู้ป่วย (เวลาออก), บล็อก 3 ส่งคิวไม่ตรง"},
+            {"label": "ผู้ป่วยใหม่ (patient.firstday)", "assume": "firstday = วันที่มา",
+             "found": f"ไม่มี firstday {nofirst}% ของ visit",
+             "status": "warn" if nofirst > MISSING_WARN_PCT else "ok", "fix": None,
+             "impact": "จำนวนผู้ป่วยใหม่ (บล็อก 1, ตารางรายแผนก)"},
+            {"label": "สิทธิการรักษา (ovst.pttype)", "assume": "ทุก visit มีสิทธิ",
+             "found": f"ไม่มีสิทธิ {nopt}% ของ visit",
+             "status": "warn" if nopt > MISSING_WARN_PCT else "ok", "fix": None,
+             "impact": "บล็อก 8 สิทธิ"},
+        ]
+    b = _safe(basics)
+    out.extend(b if isinstance(b, list) else [b])
+
+    # 3. วินิจฉัยหลัก
+    def pdx():
+        r = fetch_one("""
+            select count(distinct d.vn) dx, count(distinct case when d.diagtype = '1' then d.vn end) pdx
+            from ovstdiag d join ovst o on o.vn = d.vn
+            where o.vstdate between %(d1)s and %(d2)s""", p) or {}
+        pct = queries._pct(num(r.get("pdx")), num(r.get("dx")))
+        return {"label": "วินิจฉัยหลัก (ovstdiag.diagtype)", "assume": "1",
+                "found": f"{pct}% ของ visit ที่มีวินิจฉัย มี diagtype 1",
+                "status": "warn" if pct < PDX_WARN_PCT else "ok", "fix": None,
+                "impact": "บล็อก 8 กลุ่มโรค Top 5"}
+    out.append(_safe(pdx))
+
+    # 4. แผนกฉุกเฉิน
+    er = [c.strip() for c in queries.ER_DEP.split(",")] if queries.ER_DEP else deps.codes_in("ER")
+    out.append({"label": "ห้องฉุกเฉิน (แยกออกจากเวลารอ OPD)",
+                "assume": "OPD_ER_DEP" if queries.ER_DEP else "แผนกที่ชื่อมี ER / ฉุกเฉิน / อุบัติเหตุ",
+                "found": ", ".join(f"{c} {deps.name_of(c)}" for c in er) or "ไม่พบแผนก",
+                "status": "ok" if er else "bad",
+                "fix": None if er else "ตั้ง OPD_DEP_MAP=<รหัส>=ER หรือ OPD_ER_DEP=<รหัส>",
+                "impact": "ผู้ป่วย ER ถูกนับรวมเวลารอ OPD"})
+    return out
+
+
+def audit(d1, d2, visits):
+    """Data Audit ทั้งหมด + สรุปจำนวนเรื่องที่ควรแก้ (ใช้ทั้งหน้า /check และ setup_check.py)"""
+    dep = _safe(_dep_audit, d1, d2, visits)
+    codes = _code_audit(d1, d2, visits)
+    issues = []
+    for w in (dep.get("warn") or []):
+        issues.append(f"แผนก {w['code']} {w['name']} ({w['pct']}% ของ visit) ไม่เข้ากลุ่มใด")
+    for c in codes:
+        if c.get("status") in ("warn", "bad"):
+            issues.append(f"{c['label']}: {c['found']}")
+    return {"deps": dep, "codes": codes, "issues": issues,
+            "audited": os.getenv("OPD_DATA_AUDITED", "0") == "1"}
+
+
 def run(d1, d2):
     visits, st_rows, cols = _columns(d1, d2)
     by_col = {c["col"]: c for c in cols}
@@ -151,6 +305,9 @@ def run(d1, d2):
         keep = {k: v for k, v in stmap.MAP.items() if k not in sug}
         sug_env = ",".join([f"{stmap.STEPS[stmap.STD.index(k)][1]}:{v}" for k, v in keep.items()] +
                            [sug_env])
+    a = audit(d1, d2, visits)
+    a["issues"] = [f"ขั้น “{s['meaning']}” แทบไม่มีข้อมูล ({s['pct']}%) — ช่องที่ใช้ขั้นนี้จะเป็น “–”"
+                   for s in steps if s["status"] == "none"] + a["issues"]
     return {
         "visits": visits, "st_rows": st_rows, "st_pct": queries._pct(st_rows, visits),
         "steps": steps, "cols": cols, "sla": sla,
@@ -160,4 +317,5 @@ def run(d1, d2):
         "map_errors": stmap.ERRORS,
         "others": _other_sources(d1, d2, visits),
         "ok_pct": OK_PCT, "part_pct": PART_PCT,
+        "audit": a,
     }

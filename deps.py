@@ -63,6 +63,11 @@ def _overrides():
     return out
 
 
+def overrides():
+    """รหัสแผนกที่กำหนดกลุ่มเองด้วย OPD_DEP_MAP → {รหัส: กลุ่ม}"""
+    return _overrides()
+
+
 def _load():
     _cache = _cur()
     if _cache["t"] and time.time() - _cache["t"] < _TTL:     # โหลดแล้ว (แม้ไม่มีแผนกเลย)

@@ -177,6 +177,20 @@ document.addEventListener('DOMContentLoaded', function () {
         <span class="busy" hidden>⏳ กำลังดึงข้อมูล… (ช่วงหลายสัปดาห์อาจใช้เวลา 5–15 วินาที)</span>
       </div>
       {% if warn %}<div class="warn">⚠ {{ warn }}</div>{% endif %}
+      {% if not print_mode and not data_audited %}
+      {# Data Audit: ซ่อนเมื่อผู้ดูแลตั้ง OPD_DATA_AUDITED=1 หรือกด "ยืนยันว่าตรวจแล้ว" ที่หน้าตรวจข้อมูล (จำในเบราว์เซอร์นี้) #}
+      <div class="warn audit-bar" data-audit-key="opd-audited:{{ hospital }}">
+        ⚠ <b>ตัวเลขยังไม่ได้ตรวจกับข้อมูลของโรงพยาบาลนี้</b> — รหัสแผนก รหัสนัด และคอลัมน์เวลาของแต่ละ รพ. ไม่เหมือนกัน
+        {% if drilldown %}เปิด <a href="{{ url_for('check_page') }}">ตรวจข้อมูล</a> ก่อนนำตัวเลขไปใช้
+        {% else %}ให้ผู้ดูแลระบบเปิดหน้าตรวจข้อมูลจากเครื่องในโรงพยาบาลก่อนนำตัวเลขไปใช้{% endif %}
+      </div>
+      <script>
+        (function () {
+          var bar = document.currentScript.previousElementSibling;
+          try { if (localStorage.getItem(bar.dataset.auditKey)) bar.remove(); } catch (e) {}
+        })();
+      </script>
+      {% endif %}
       <div class="kpis">
         <div class="kpi"><div class="l"><span class="e">👥</span>จำนวนผู้ป่วยทั้งหมด</div>
           <div class="v">{{ '{:,}'.format(d.kpi.total) }}</div>
