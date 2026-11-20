@@ -131,9 +131,11 @@ copy .env.example .env      &REM แก้ค่า DB_ ใน .env ด้วย
 | `OPD_MAX_DAYS` | ช่วงวันที่ยาวสุดที่ดึงได้ต่อครั้ง (ค่าเริ่มต้น 366) — กันฐานข้อมูล HOSxP ช้าจากการดึงหลายปี |
 | `OPD_DB_TIMEOUT` | เวลาสูงสุดต่อคำสั่ง SQL เป็นวินาที (ค่าเริ่มต้น 60) |
 | `OPD_LOG_PARAMS` | `1` = บันทึกชื่อพารามิเตอร์ที่แอปไม่รู้จักลง log (ใช้ตรวจ add-on ของ HOSxP · ค่าเริ่มต้นปิด) |
-| `OPD_PUBLIC_DRILLDOWN` | `1` = เปิดหน้าดูรายเคส (`/cases`) และตรวจข้อมูล (`/check`) ให้เข้าจากนอก LAN ได้ · ค่าเริ่มต้นเฉพาะ LAN |
-| `OPD_LAN_NETS` | ช่วง IP ภายในของ รพ. ที่ไม่ใช่ 10.x / 172.16–31.x / 192.168.x (เช่น `30.25.0.0/16`) — ใช้กับเครื่องที่ต่อแอปตรง ไม่ผ่าน Cloudflare |
-| `OPD_TRUSTED_IPS` | IP สาธารณะของ รพ. (คั่นด้วย `,` ใส่ CIDR ได้) — เมื่อเปิดผ่าน Cloudflare คำขอจาก IP เหล่านี้นับเป็น "ใน รพ." (เห็นรายเคส/HN) · ดูจาก header `CF-Connecting-IP` ซึ่ง Cloudflare ใส่เอง ต้องตั้ง firewall ให้เว็บรับเฉพาะ IP ของ Cloudflare ด้วย |
+| `OPD_PUBLIC_DRILLDOWN` | `1` = เปิดหน้าดูรายเคส (`/cases`), Flow 3D (`/flow`, `/api/flow.json`) และตรวจข้อมูล (`/check`) ให้เข้าจากนอก LAN ได้ · ค่าเริ่มต้นเฉพาะ LAN (ไม่แนะนำให้เปิด — เป็นข้อมูลรายเคส) |
+| `OPD_PUBLIC_MONTHLY` | ค่าเริ่มต้น `1` = คนนอก รพ. เลือกช่วงวันที่ได้เป็นเดือนเต็มเท่านั้น (แดชบอร์ด · `/api/data.json` · ไฟล์ส่งออก) กันการย้อนหาผู้ป่วยรายวัน · `0` = ปิด |
+| `OPD_LAN_NETS` | ช่วง IP ภายในของ รพ. ที่ **ไม่ใช่** 10.x / 172.16–31.x / 192.168.x เท่านั้น — ใช้กับเครื่องที่ต่อแอปตรง ไม่ผ่าน Cloudflare · 192.168.x นับเป็นภายในอยู่แล้ว ไม่ต้องใส่ · ห้ามใส่ IP บ้าน/มือถือ |
+| `OPD_TRUSTED_IPS` | IP สาธารณะของ รพ. (คั่นด้วย `,` ใส่ CIDR ได้) — เมื่อเปิดผ่าน Cloudflare คำขอจาก IP เหล่านี้นับเป็น "ใน รพ." (เห็นรายเคส/HN) · ดูจาก header `CF-Connecting-IP` เฉพาะเมื่อคำขอมาจาก IP ของ Cloudflare จริง (ค่าท้ายของ `X-Forwarded-For` ที่ Apache ใส่) — เครื่องอื่นส่ง header นี้มาเองถือว่าปลอม · ทางที่แนะนำสำหรับเจ้าหน้าที่คือทางเข้าภายใน (ด้านล่าง) |
+| `OPD_TRUSTED_PROXIES`, `OPD_CF_RANGES` | IP ของ reverse proxy ที่เชื่อ `X-Forwarded-For` (ค่าเริ่มต้น `127.0.0.1,::1`) และช่วง IP ของ Cloudflare (ค่าเริ่มต้นตาม cloudflare.com/ips) — ปกติไม่ต้องตั้ง |
 | `OPD_EXPORT_WAIT` | ส่งออก PNG/JPG/PDF: รอคิวได้นานสุดกี่วินาที (ค่าเริ่มต้น 0 = ไม่ว่างตอบ 503 ทันที ไม่กิน worker) |
 | `OPD_EXPORT_CACHE_TTL` | เก็บไฟล์ที่ส่งออกแล้วให้คนถัดไปที่ขอช่วงเดียวกัน (วินาที, ค่าเริ่มต้น 300) |
 | `OPD_CHROME_NO_SANDBOX` | `1` = ปิด sandbox ของ chromium (ค่าเริ่มต้นปิดเฉพาะเมื่อรันด้วย root / บน Windows) |
@@ -159,6 +161,47 @@ ProxyPassReverse /opd/ http://127.0.0.1:5900/
   — แต่ละช่วงวันที่ใหม่ยิงคำสั่งไปฐานข้อมูล HOSxP ราว 20 คำสั่ง
 - firewall ให้พอร์ต 5900 รับเฉพาะเครื่อง proxy และ LAN — ไม่ให้ข้าม proxy มาที่แอปตรง ๆ
 - header `Strict-Transport-Security`, และ `X-Frame-Options: SAMEORIGIN` ถ้าไม่ได้เปิดผ่านกรอบของโปรแกรมอื่น
+
+### 5.1 ทางเข้าภายใน รพ. (โดเมนย่อยที่ชี้ IP ภายใน — แนะนำสำหรับรายเคสและ Flow 3D)
+
+ทางสาธารณะ (เช่น `https://<โดเมน รพ.>/opd/` ผ่าน Cloudflare) ให้คนนอกเห็นเฉพาะแดชบอร์ดสรุปแบบรายเดือน · หน้ารายเคส Flow 3D และตรวจข้อมูลตอบ 403 · ทางเข้าภายในเป็นโดเมนย่อยอีกชื่อที่ DNS ชี้ไป **IP ภายใน** ของเครื่องแอป
+เบราว์เซอร์ในโรงพยาบาลจึงต่อตรงถึงเครื่องแอป ไม่ผ่าน Cloudflare/อินเทอร์เน็ต — Apache ส่ง IP จริงของเครื่องเจ้าหน้าที่ (`192.168.x.x`) ต่อให้แอป
+แอปนับเป็นเครื่องใน รพ. เอง (เลือกช่วงวันที่ได้อิสระ และเปิดรายเคส · Flow 3D · ตรวจข้อมูล ได้) และจากอินเทอร์เน็ตเปิดไม่ได้เพราะ IP ภายในใช้จากข้างนอกไม่ได้ — ใช้จากนอก รพ. ให้ต่อ VPN ของ รพ. (ห้ามเพิ่ม IP บ้าน)
+
+**ตัวอย่าง รพ.วังน้ำเขียว:** `https://lan.wnkhos.go.th/opd/` (DNS → `192.168.11.40`) · หน้าแรก `https://lan.wnkhos.go.th/` มีลิงก์ระบบภายในทุกตัว
+
+1. **DNS:** เพิ่ม A record เช่น `lan` → IP ภายในของเครื่องแอป · ใน Cloudflare ต้องเป็น **DNS only (เมฆสีเทา)** — เปิด proxy (เมฆสีส้ม) แล้วใช้ไม่ได้
+   (resolver/เราเตอร์บางรุ่นมี DNS rebinding protection ที่ไม่ตอบ IP ภายใน — ทดสอบจากเครื่องใน รพ. ทั้ง DNS ของ ISP และ 8.8.8.8)
+2. **ใบรับรอง:** Let's Encrypt แบบ HTTP-01 ออกให้ไม่ได้ (ข้างนอกเข้าถึง IP ภายในไม่ได้) — ใช้ DNS-01 ผ่าน Cloudflare (ฟรี ต่ออายุอัตโนมัติ):
+   ```bash
+   dnf install certbot python3-certbot-dns-cloudflare        # หรือ apt install python3-certbot-dns-cloudflare
+   # /root/.secrets/cloudflare.ini (chmod 600): dns_cloudflare_api_token = <token สิทธิ์ Zone:DNS:Edit เฉพาะโดเมนนี้>
+   certbot certonly --dns-cloudflare --dns-cloudflare-credentials /root/.secrets/cloudflare.ini -d lan.<โดเมน รพ.>
+   ```
+3. **Apache:** vhost แยก (เช่น `/etc/httpd/conf.d/zz-lan-443.conf`) จำกัดให้เฉพาะ IP ภายใน แล้วส่งต่อแบบเดียวกับทางสาธารณะ
+   (ใช้ vhost เดียวรวมทุกแอปภายในได้ — เพิ่ม `ProxyPass` ของแต่ละแอปต่อกัน):
+   ```apache
+   <VirtualHost *:443>
+       ServerName lan.<โดเมน รพ.>
+       SSLEngine on
+       SSLCertificateFile    /etc/letsencrypt/live/lan.<โดเมน รพ.>/fullchain.pem
+       SSLCertificateKeyFile /etc/letsencrypt/live/lan.<โดเมน รพ.>/privkey.pem
+       <Location />
+           Require ip 192.168.0.0/16 10.0.0.0/8 172.16.0.0/12 127.0.0.1
+       </Location>
+       ProxyPreserveHost On
+       RequestHeader set X-Forwarded-Proto "https"
+       ProxyPass        /opd/ http://127.0.0.1:5900/
+       ProxyPassReverse /opd/ http://127.0.0.1:5900/
+       <Location /opd/>
+           RequestHeader set X-Forwarded-Prefix "/opd"
+       </Location>
+       RedirectMatch ^/opd$ /opd/
+   </VirtualHost>
+   ```
+   `httpd -t` ผ่านแล้วค่อย `systemctl reload httpd`
+4. **`.env`:** ไม่ต้องตั้งอะไรเพิ่ม — `192.168.x.x` นับเป็นภายในอยู่แล้ว · `OPD_TRUSTED_IPS` เหลือเฉพาะ IP สาธารณะจริงของ รพ. · `OPD_LAN_NETS` ใส่เฉพาะช่วงภายในที่ไม่ใช่ private มาตรฐาน — **ห้ามใส่ IP บ้าน/มือถือ**
+5. **ทดสอบ:** จากเครื่องใน รพ. เปิด `https://lan.<โดเมน รพ.>/opd/` แล้วต้องไม่มีแถบ 🔒 “ข้อมูลสาธารณะ” และเห็นปุ่ม “ดู Flow 3D” · จากมือถือที่ใช้เน็ตมือถือ (ปิด Wi-Fi/VPN) ต้องเปิดไม่ได้
 
 ## 6. ตรวจสอบหลังติดตั้ง
 

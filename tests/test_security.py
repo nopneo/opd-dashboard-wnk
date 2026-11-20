@@ -41,10 +41,13 @@ def test_hospital_ip_through_cloudflare_counts_as_lan(client):
 
 
 @pytest.mark.parametrize("headers, lan", [
-    ({"CF-Connecting-IP": "10.99.3.4"}, True),                                  # อยู่ในช่วง CIDR ที่ตั้งไว้
-    ({"CF-Connecting-IP": "30.25.3.7"}, False),                                 # ช่วง LAN ไม่นับเมื่อมาทาง Cloudflare
-    ({"CF-Connecting-IP": "192.168.1.5"}, False),                               # IP ภายในแต่มาทาง Cloudflare = ปลอม
-    ({"CF-Connecting-IP": "not-an-ip"}, False),
+    ({"CF-Connecting-IP": "10.99.3.4", "X-Forwarded-For": "172.70.1.1"}, True),     # อยู่ในช่วง CIDR ที่ตั้งไว้
+    ({"CF-Connecting-IP": "30.25.3.7", "X-Forwarded-For": "172.70.1.1"}, False),    # ช่วง LAN ไม่นับเมื่อมาทาง Cloudflare
+    ({"CF-Connecting-IP": "192.168.1.5", "X-Forwarded-For": "172.70.1.1"}, False),  # IP ภายในแต่มาทาง Cloudflare = ปลอม
+    ({"CF-Connecting-IP": "not-an-ip", "X-Forwarded-For": "172.70.1.1"}, False),
+    ({"CF-Connecting-IP": "183.88.214.202"}, False),                            # ไม่มี hop ของ Cloudflare = header ปลอม
+    ({"CF-Connecting-IP": "183.88.214.202", "X-Forwarded-For": "192.168.1.5"}, False),  # ส่งเองผ่าน proxy ภายใน
+    ({"CF-Connecting-IP": "183.88.214.202", "X-Forwarded-For": "8.8.8.8"}, False),      # hop ไม่ใช่ Cloudflare
     ({"X-Forwarded-For": "192.168.10.5"}, True),                                # proxy ใน รพ. โดยไม่ผ่าน Cloudflare
     ({"X-Forwarded-For": "192.168.10.5, 8.8.8.8"}, False),                      # hop ท้ายเป็น IP สาธารณะ
     ({"X-Forwarded-For": "30.25.3.7"}, True),                                   # ช่วงภายในที่ตั้งใน OPD_LAN_NETS
@@ -63,9 +66,9 @@ def test_lan_detection(headers, lan):
 
 def test_hn_hidden_for_hospital_ip_via_cloudflare_unless_lan(client):
     """HN ใช้หลักเดียวกัน — ผ่าน Cloudflare จาก IP ของ รพ. เห็น HN, จากที่อื่นไม่เห็น"""
-    with app_mod.app.test_request_context("/cases", headers=HOSPITAL):
+    with app_mod.app.test_request_context("/cases", headers=HOSPITAL, environ_base={"REMOTE_ADDR": "127.0.0.1"}):
         assert app_mod._hn_allowed()
-    with app_mod.app.test_request_context("/cases", headers=PUBLIC):
+    with app_mod.app.test_request_context("/cases", headers=PUBLIC, environ_base={"REMOTE_ADDR": "127.0.0.1"}):
         assert not app_mod._hn_allowed()
 
 
@@ -126,3 +129,82 @@ def test_chromium_sandbox_only_disabled_when_needed(monkeypatch, euid, env, want
     else:
         monkeypatch.delenv("OPD_CHROME_NO_SANDBOX", raising=False)
     assert ("--no-sandbox" in render._base_args("/usr/bin/chromium", "/tmp/p")) is want
+
+
+# ---------------------------------------------------------------- privacy.py: Flow 3D + ปัดรายเดือน
+
+LAN = {"REMOTE_ADDR": "192.168.1.20"}
+
+
+@pytest.mark.parametrize("url", ["/flow", "/flow?d=2026-10-15", "/api/flow.json?d=2026-10-15"])
+def test_flow_is_lan_only(client, url):
+    assert client.get(url, headers=PUBLIC).status_code == 403
+    assert client.get(url, environ_base=LAN).status_code == 200
+    assert client.get(url, headers=HOSPITAL).status_code == 200
+
+
+def test_spoofed_cf_header_on_internal_domain_is_not_lan(client):
+    # เครื่องใน LAN เข้าทางโดเมนภายใน (Apache ส่ง IP จริง 192.168.x) แต่ใส่ CF-Connecting-IP ของ รพ. มาเอง
+    h = {"CF-Connecting-IP": "183.88.214.202", "X-Forwarded-For": "192.168.1.5"}
+    assert client.get("/cases", headers=h).status_code == 403
+
+
+def test_dashboard_hides_flow_links_from_internet(client):
+    assert "/flow" not in client.get("/", headers=PUBLIC).get_data(as_text=True)
+    assert "/flow" in client.get("/", environ_base=LAN).get_data(as_text=True)
+
+
+@pytest.fixture
+def built(monkeypatch, client):
+    import queries
+    seen = []
+    monkeypatch.setattr(queries, "build", lambda d1, d2: seen.append((d1, d2)) or {"d1": d1, "d2": d2})
+    return seen
+
+
+def test_public_data_json_is_month_snapped(client, built):
+    client.get("/api/data.json?d1=2026-02-03&d2=2026-02-03", headers=PUBLIC)
+    assert built[-1] == ("2026-02-01", "2026-02-28")
+    client.get("/api/data.json?d1=2026-02-03&d2=2026-02-03", headers=HOSPITAL)
+    assert built[-1] == ("2026-02-03", "2026-02-03")
+    client.get("/api/data.json?d1=2026-02-03&d2=2026-02-03", environ_base=LAN)
+    assert built[-1] == ("2026-02-03", "2026-02-03")
+
+
+def test_public_window_never_exceeds_max_days(client, built):
+    client.get("/api/data.json?d1=2025-02-15&d2=2026-02-14", headers=PUBLIC)
+    d1, d2 = built[-1]
+    from datetime import date
+    assert d2 == "2026-02-28" and d1.endswith("-01")
+    assert (date.fromisoformat(d2) - date.fromisoformat(d1)).days < app_mod.MAX_DAYS
+
+
+def test_public_dashboard_notice(client):
+    assert "ข้อมูลสาธารณะ" in client.get("/", headers=PUBLIC).get_data(as_text=True)
+    assert "ข้อมูลสาธารณะ" not in client.get("/", environ_base=LAN).get_data(as_text=True)
+
+
+def test_monthly_can_be_disabled(client, built, monkeypatch):
+    monkeypatch.setenv("OPD_PUBLIC_MONTHLY", "0")
+    client.get("/api/data.json?d1=2026-02-03&d2=2026-02-03", headers=PUBLIC)
+    assert built[-1] == ("2026-02-03", "2026-02-03")
+
+
+def test_export_public_flag_and_separate_cache(client, monkeypatch):
+    urls = []
+
+    def fake(fmt, url, out):
+        urls.append(url)
+        open(out, "wb").write(b"x")
+    monkeypatch.setattr(app_mod.render, "render_to", fake)
+    monkeypatch.setattr(app_mod, "EXPORT_ENABLED", True)
+    assert client.get("/export.png?d1=2026-02-01&d2=2026-02-28", environ_base=LAN).status_code == 200
+    assert client.get("/export.png?d1=2026-02-01&d2=2026-02-28", headers=PUBLIC).status_code == 200
+    assert len(urls) == 2 and "public=1" not in urls[0] and "public=1" in urls[1]
+
+
+def test_month_window():
+    from datetime import date
+    import privacy
+    assert privacy.month_window("2026-02-03", "2026-02-03", today=date(2026, 6, 1)) == ("2026-02-01", "2026-02-28")
+    assert privacy.month_window("2026-06-02", "2026-06-05", today=date(2026, 6, 9)) == ("2026-06-01", "2026-06-09")
