@@ -38,6 +38,7 @@ import db
 import deps
 import flow
 import queries
+import privacy
 import render
 import stmap
 
@@ -69,7 +70,7 @@ app = Flask(__name__)
 app.wsgi_app = PrefixMiddleware(app.wsgi_app)
 app.jinja_env.globals.update(smooth_path=charts.smooth_path, nice_max=charts.nice_max)
 #: เวอร์ชันของแอป — แสดงที่ท้ายหน้าและคู่มือ (ประวัติการแก้ไขอยู่ใน CHANGELOG.md)
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 #: ผู้พัฒนา — แสดงท้ายทุกหน้าและในคู่มือ (ทุกโรงพยาบาลที่ติดตั้ง) แก้ทับได้ด้วย env OPD_DEV_CONTACT
 DEV_CONTACT = "นายเผด็จชัย สิงหล โรงพยาบาลวังน้ำเขียว โทร 086-257-4817"
 #: เปลี่ยนเลขนี้ทุกครั้งที่เปลี่ยนไอคอน — บังคับ Safari/Chrome โหลดไอคอนหน้าจอโฮมใหม่
@@ -195,9 +196,29 @@ def _params():
     return d1, d2, " · ".join(warn)
 
 
+def _public_view():
+    """คนนอก รพ. → ช่วงวันที่ปัดเป็นเดือนเต็ม (privacy.py)
+    public=1 = บังคับโหมดสาธารณะ (ใช้ตอนส่งออกไฟล์ให้คนนอก เพราะ chromium เรียกหน้าเว็บจาก 127.0.0.1 ซึ่งนับเป็นคนใน)"""
+    if not privacy.enabled():
+        return False
+    return request.args.get("public") == "1" or not _from_lan()
+
+
+def _view_params():
+    """(d1, d2, ข้อความเตือน, public) ของแดชบอร์ด / data.json / ไฟล์ส่งออก"""
+    d1, d2, warn = _params()
+    public = _public_view()
+    if public:
+        d1, d2 = privacy.month_window(d1, d2)
+        while (date.fromisoformat(d2) - date.fromisoformat(d1)).days >= MAX_DAYS:
+            m = date.fromisoformat(d1)
+            d1 = (m.replace(year=m.year + 1, month=1) if m.month == 12 else m.replace(month=m.month + 1)).isoformat()
+    return d1, d2, warn, public
+
+
 @app.route("/")
 def dashboard():
-    d1, d2, warn = _params()
+    d1, d2, warn, public = _view_params()
     t = date.today()
     first = t.replace(day=1)
     prev_end = first - timedelta(days=1)
@@ -207,7 +228,7 @@ def dashboard():
     d = queries.build(d1, d2)
     if d.get("stale_since"):
         warn = " · ".join(x for x in (warn, f"เชื่อมต่อ HOSxP ไม่ได้ — แสดงข้อมูลล่าสุดเมื่อ {d['stale_since']}") if x)
-    return render_template("dashboard.html", d=d, warn=warn, ranges=ranges,
+    return render_template("dashboard.html", d=d, warn=warn, ranges=ranges, public_view=public,
                            print_mode=request.args.get("print") == "1")
 
 
@@ -231,6 +252,25 @@ TRUSTED_NETS = _networks(os.getenv("OPD_TRUSTED_IPS", ""))
 LAN_NETS = _networks(os.getenv("OPD_LAN_NETS", ""))
 
 
+#: เครื่อง reverse proxy (Apache บนเครื่องเดียวกัน) ที่เชื่อ X-Forwarded-For ได้
+TRUSTED_PROXIES = {x.strip() for x in os.getenv("OPD_TRUSTED_PROXIES", "127.0.0.1,::1").split(",") if x.strip()}
+
+#: ช่วง IP ของ Cloudflare (https://www.cloudflare.com/ips/) — เชื่อ CF-Connecting-IP เฉพาะคำขอที่มาจากช่วงนี้จริง
+_CF_DEFAULT = ("173.245.48.0/20,103.21.244.0/22,103.22.200.0/22,103.31.4.0/22,141.101.64.0/18,108.162.192.0/18,"
+               "190.93.240.0/20,188.114.96.0/20,197.234.240.0/22,198.41.128.0/17,162.158.0.0/15,104.16.0.0/13,"
+               "104.24.0.0/14,172.64.0.0/13,131.0.72.0/22,2400:cb00::/32,2606:4700::/32,2803:f800::/32,"
+               "2405:b500::/32,2405:8100::/32,2a06:98c0::/29,2c0f:f248::/32")
+CF_NETS = _networks(os.getenv("OPD_CF_RANGES", _CF_DEFAULT))
+
+
+def _in(ip, nets):
+    try:
+        ip = ipaddress.ip_address((ip or "").strip())
+    except ValueError:
+        return False
+    return any(ip in n for n in nets)
+
+
 def _private(ip):
     try:
         ip = ipaddress.ip_address((ip or "").strip())
@@ -242,22 +282,21 @@ def _private(ip):
 def _from_lan():
     """คำขอนี้มาจากในโรงพยาบาลหรือไม่
 
-    - ผ่าน Cloudflare (มี CF-Connecting-IP ซึ่ง Cloudflare ใส่เองเสมอ คนข้างนอกปลอมไม่ได้
-      เพราะ firewall ให้ Cloudflare เท่านั้นเข้าถึงเว็บ): นับเป็น LAN เมื่อ IP นั้นอยู่ใน OPD_TRUSTED_IPS
-    - ผ่าน reverse proxy ใน รพ. โดยไม่ผ่าน Cloudflare (มี X-Forwarded-For): ดู IP ตัวท้ายที่ proxy ใส่
-    - ต่อแอปตรง ๆ (http://<IP>:5900): ดู IP ของเครื่องที่ต่อ
+    hop = เครื่องที่ต่อเข้า proxy จริง = ค่าท้ายสุดของ X-Forwarded-For (proxy ต่อท้ายเอง ผู้ใช้ปลอมไม่ได้)
+    เชื่อเฉพาะเมื่อแอปได้คำขอจาก proxy ที่ไว้ใจ (OPD_TRUSTED_PROXIES) หรือ proxy ใน LAN · ไม่งั้น hop = เครื่องที่ต่อแอปตรง ๆ
+
+    - มี CF-Connecting-IP และ hop เป็น IP ของ Cloudflare จริง: นับเป็น LAN เมื่อ IP ผู้ใช้อยู่ใน OPD_TRUSTED_IPS
+    - มี CF-Connecting-IP แต่ hop ไม่ใช่ Cloudflare = header ปลอม (เช่นเครื่องใน LAN ส่งมาเองทางโดเมนภายใน) → ไม่ใช่ LAN
+      (เดิมเชื่อ header นี้จากใครก็ได้ — ปลอดภัยเฉพาะเมื่อ firewall ให้ Cloudflare เท่านั้นต่อพอร์ต 443)
+    - ไม่มี CF-Connecting-IP (proxy ใน รพ. / โดเมนภายใน / ต่อ http://<IP>:5900 ตรง): hop ต้องเป็น IP ภายใน
     """
-    cf = request.headers.get("CF-Connecting-IP")
+    peer = request.remote_addr
+    xff = [x.strip() for x in request.headers.get("X-Forwarded-For", "").split(",") if x.strip()]
+    hop = xff[-1] if xff and (peer in TRUSTED_PROXIES or _private(peer)) else peer
+    cf = request.headers.get("CF-Connecting-IP", "").strip()
     if cf:
-        try:
-            ip = ipaddress.ip_address(cf.strip())
-        except ValueError:
-            return False
-        return any(ip in net for net in TRUSTED_NETS)
-    xff = request.headers.get("X-Forwarded-For")
-    if xff:
-        return _private(xff.split(",")[-1]) and _private(request.remote_addr)
-    return _private(request.remote_addr)
+        return _in(hop, CF_NETS) and _in(cf, TRUSTED_NETS)
+    return _private(hop) and _private(peer)
 
 
 def _hn_allowed():
@@ -425,7 +464,7 @@ def check_page():
 
 @app.route("/api/data.json")
 def api_data():
-    d1, d2, _ = _params()
+    d1, d2, _, _ = _view_params()
     return jsonify(queries.build(d1, d2))
 
 
@@ -454,7 +493,10 @@ def _flow_layout():
 
 @app.route("/flow")
 def flow_page():
-    """ผังผู้ป่วย OPD แบบ 2.5D — เล่นย้อนหลังรายวัน หรือโหมดสด (วันนี้)"""
+    """ผังผู้ป่วย OPD แบบ 2.5D — เล่นย้อนหลังรายวัน หรือโหมดสด (วันนี้)
+    เป็นข้อมูลรายเคส (ทุก visit ของวัน) → เปิดได้เฉพาะเครื่องใน รพ. เหมือน /cases (privacy.py)"""
+    if not _drilldown_allowed():
+        return _lan_only_page("Flow 3D")
     today = date.today().isoformat()
     layout, layout_err = _flow_layout()
     return render_template("flow.html", d=_iso(request.args.get("d"), today), today=today,
@@ -463,6 +505,8 @@ def flow_page():
 
 @app.route("/api/flow.json")
 def api_flow():
+    if not _drilldown_allowed():
+        return {"error": "ข้อมูลรายเคส — เปิดได้เฉพาะเครื่องในเครือข่ายของโรงพยาบาล"}, 403
     today = date.today().isoformat()
     d = _iso(request.args.get("d"), today)
     if d > today:
@@ -539,12 +583,13 @@ def export(fmt):
     if fmt not in MIME or not EXPORT_ENABLED:
         return {"error": "รองรับเฉพาะ png, jpg, pdf" if EXPORT_ENABLED else "ปิดการส่งออกไฟล์ในโหมดนี้"}, 404
 
-    d1, d2, _ = _params()
-    qs = urllib.parse.urlencode({"d1": d1, "d2": d2, "print": "1"})
+    d1, d2, _, public = _view_params()
+    qs = urllib.parse.urlencode({"d1": d1, "d2": d2, "print": "1", **({"public": "1"} if public else {})})
     url = f"http://127.0.0.1:{os.getenv('PORT', '5900')}/?{qs}"
 
     name = f"opd_{d1}_{d2}.{fmt}"
-    blob = _export_cache.get(name, EXPORT_CACHE_TTL)
+    ckey = name + ("|public" if public else "")         # ไฟล์ของคนนอกแยกจากของเครื่องใน รพ.
+    blob = _export_cache.get(ckey, EXPORT_CACHE_TTL)
     if blob is not None:
         return send_file(BytesIO(blob), mimetype=MIME[fmt], as_attachment=True, download_name=name)
     if not _render_lock.acquire(timeout=EXPORT_WAIT):
@@ -556,7 +601,7 @@ def export(fmt):
             # อ่านใส่หน่วยความจำก่อนออกจาก with — send_file ยังถือ handle ค้างไว้
             # ทำให้ลบโฟลเดอร์ชั่วคราวไม่ได้ (PermissionError บน Windows)
             blob = open(out, "rb").read()
-        _export_cache.set(name, blob)
+        _export_cache.set(ckey, blob)
         return send_file(BytesIO(blob), mimetype=MIME[fmt],
                          as_attachment=True, download_name=name)
     except Exception as e:                      # chromium ไม่มี/ตาย/หมดเวลา

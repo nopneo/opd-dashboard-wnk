@@ -28,6 +28,10 @@ from datetime import date, datetime, timedelta
 import deps
 import stmap
 from cache import TTLCache
+import threading
+from concurrent.futures import ThreadPoolExecutor
+
+import db as _db
 from db import fetch, fetch_one, num
 from db import tenant as db_tenant
 
@@ -139,11 +143,12 @@ def visit_counts(d1, d2):
     return {"total": total, "new": new, "old": total - new}
 
 
-def kpi_summary(d1, d2, st):
+def kpi_summary(d1, d2, st, cur=None, prev=None, st_prev=None):
+    """cur / prev / st_prev ส่งมาได้ถ้าดึงไว้แล้ว (_build ดึงพร้อมกันหลายเธรด) · ไม่ส่ง = ดึงเอง"""
     p1, p2, span = _prev_period(d1, d2)
-    cur = visit_counts(d1, d2)
-    prev = visit_counts(p1, p2)
-    st_prev = service_times(p1, p2)
+    cur = visit_counts(d1, d2) if cur is None else cur
+    prev = visit_counts(p1, p2) if prev is None else prev
+    st_prev = service_times(p1, p2) if st_prev is None else st_prev
     wait_dr = next(r for r in st["sla"] if r["label"] == "รอพบแพทย์")
     return {
         "period": {"d1": d1, "d2": d2, "prev_d1": p1, "prev_d2": p2, "days": span},
@@ -807,7 +812,19 @@ def recommendations(d):
 #: แคชผลลัพธ์สั้น ๆ — หลายคนเปิดหน้าเดียวกันพร้อมกันจะไม่ยิง DB ซ้ำ
 #: ตั้งอายุแคชด้วย env OPD_CACHE_TTL (วินาที, 0 = ปิด)
 CACHE_TTL = int(os.getenv("OPD_CACHE_TTL", "120"))
+#: ช่วงวันที่ยาว (เกิน LONG_RANGE_DAYS วัน เช่น รายไตรมาส/ปีงบ) คำนวณนาน และใช้ดูภาพรวม ไม่ต้องสดระดับนาที
+#: → เก็บแคชนานกว่า (OPD_LONG_CACHE_TTL วินาที, ค่าเริ่มต้น 30 นาที)
+LONG_RANGE_DAYS = int(os.getenv("OPD_LONG_RANGE_DAYS", "31"))
+LONG_CACHE_TTL = int(os.getenv("OPD_LONG_CACHE_TTL", "1800"))
 _cache = TTLCache(maxsize=32)
+
+#: จำนวน query ที่ยิงพร้อมกันต่อการคำนวณ 1 ครั้ง (เฉพาะโหมด direct) · 1 = ทีละคำสั่งแบบเดิม
+PARALLEL = max(1, int(os.getenv("OPD_PARALLEL", "4")))
+
+
+def _ttl(d1, d2):
+    span = (date.fromisoformat(d2) - date.fromisoformat(d1)).days + 1
+    return max(CACHE_TTL, LONG_CACHE_TTL) if span > LONG_RANGE_DAYS else CACHE_TTL
 
 
 def build(d1=None, d2=None):
@@ -819,7 +836,7 @@ def build(d1=None, d2=None):
 
     key = (db_tenant(), d1, d2)
     if CACHE_TTL:
-        hit = _cache.get(key, CACHE_TTL)
+        hit = _cache.get(key, _ttl(d1, d2))
         if hit is not None:
             return hit
     try:
@@ -835,13 +852,53 @@ def build(d1=None, d2=None):
         return dict(stale[1], stale_since=stale[1]["generated_at"])
 
 
+class _Now:
+    """ผลที่คำนวณทันที (โหมดไม่ขนาน) — หน้าตาเหมือน Future"""
+    def __init__(self, v):
+        self._v = v
+
+    def result(self):
+        return self._v
+
+
+def _job(f, *a):
+    try:
+        return f(*a)
+    finally:
+        _db.close()             # connection เป็นของเธรดใน pool — ปิดทุกครั้ง ไม่ให้ค้าง
+
+
 def _build(key, d1, d2):
-    st = service_times(d1, d2)
-    kpi = kpi_summary(d1, d2, st)
+    # ทุกบล็อกเป็น query อ่านอย่างเดียวที่ไม่ขึ้นกับกัน (ยกเว้นที่ต้องรอ kpi/hourly) → ยิงพร้อมกัน PARALLEL คำสั่ง
+    # ช่วงปีงบ: เดิม 21 คำสั่งต่อกัน ~41 วิ · โหมด bms/ssh ยังทำทีละคำสั่งตามเดิม
+    par = PARALLEL > 1 and _db.MODE == "direct"
+    ex = ThreadPoolExecutor(max_workers=PARALLEL) if par else None
+    sub = (lambda f, *a: ex.submit(_job, f, *a)) if par else (lambda f, *a: _Now(f(*a)))
+    try:
+        return _build_with(key, d1, d2, sub)
+    finally:
+        if ex:
+            ex.shutdown(wait=True)
+
+
+def _build_with(key, d1, d2, sub):
+    p1, p2, span = _prev_period(d1, d2)
+    f_st, f_cur = sub(service_times, d1, d2), sub(visit_counts, d1, d2)
+    f_prev, f_st_prev = sub(visit_counts, p1, p2), sub(service_times, p1, p2)
+    f_hrs = sub(hourly, d1, d2, span)
+    f_deps, f_flow, f_table = sub(departments, d1, d2), sub(patient_flow, d1, d2), sub(dept_table, d1, d2)
+    f_bn = {"appt": sub(appointment_times, d1, d2), "lab": sub(lab_tat, d1, d2),
+            "screen": sub(screening_lab, d1, d2), "rx": sub(pharmacy_wait, d1, d2)}
+
+    st = f_st.result()
+    kpi = kpi_summary(d1, d2, st, f_cur.result(), f_prev.result(), f_st_prev.result())
     days = kpi["period"]["days"]
-    hrs = hourly(d1, d2, days)
-    appt = appointments(d1, d2, kpi["total"])
-    deps, mis = departments(d1, d2)
+    f_appt, f_prof = sub(appointments, d1, d2, kpi["total"]), sub(patient_profile, d1, d2, kpi["total"])
+    hrs = f_hrs.result()
+    f_dr = sub(doctor_flow, d1, d2, hrs)
+    appt = f_appt.result()
+    deps, mis = f_deps.result()
+    bn = {"dr": f_dr.result(), **{k: f.result() for k, f in f_bn.items()}}
 
     data = {
         "generated_at": _thai_datetime(),
@@ -853,12 +910,12 @@ def _build(key, d1, d2):
         "depts": deps,
         "dept_mis": mis,
         "clinics": deps[:5],
-        "flow": patient_flow(d1, d2),
+        "flow": f_flow.result(),
         "appt": appt,
-        "profile": patient_profile(d1, d2, kpi["total"]),
+        "profile": f_prof.result(),
         "alerts": alerts(kpi, st, appt, hrs),
-        "bn": bottleneck(d1, d2, hrs),
-        "dept_table": dept_table(d1, d2),
+        "bn": bn,
+        "dept_table": f_table.result(),
         "time_n": st["total_n"],
         "targets": {"total": TARGET_TOTAL, "wait_dr": TARGET_WAIT_DR,
                     "done": TARGET_DONE_PCT, "noshow": TARGET_NOSHOW},

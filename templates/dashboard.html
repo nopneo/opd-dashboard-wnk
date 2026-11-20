@@ -60,7 +60,7 @@
 {% set flow_url = url_for('flow_page') ~ ('?d=' ~ d.d1 if d.d1 == d.d2 else '') %}
 <div class="toolbar">
   {% set q = '?d1=' ~ d.d1 ~ '&d2=' ~ d.d2 %}
-  <a class="live-map" href="{{ flow_url }}">🧊 ดู Flow 3D</a>
+  {% if drilldown %}<a class="live-map" href="{{ flow_url }}">🧊 ดู Flow 3D</a>{% endif %}
   {% if export_enabled %}
   <a class="dl" href="{{ url_for('export', fmt='jpg') }}{{ q }}">⬇ JPG</a>
   <a class="dl" href="{{ url_for('export', fmt='png') }}{{ q }}">⬇ PNG</a>
@@ -134,8 +134,8 @@ document.addEventListener('DOMContentLoaded', function () {
       <div class="quote">“เห็นทุกคิว รู้ทุกจุดที่รอ บริหาร OPD ให้เร็วขึ้น เพื่อประสบการณ์ที่ดีขึ้นของผู้ป่วย”</div>
     </div>
     <div class="side">
-      <a class="flow3d" href="{{ flow_url }}" title="ผังผู้ป่วย OPD แบบ 3 มิติ เล่นย้อนหลัง/ดูสด">
-        🧊 ดู Flow 3D <small>ผังผู้ป่วยเคลื่อนไหวตามเวลาจริง</small></a>
+      {% if drilldown %}<a class="flow3d" href="{{ flow_url }}" title="ผังผู้ป่วย OPD แบบ 3 มิติ เล่นย้อนหลัง/ดูสด">
+        🧊 ดู Flow 3D <small>ผังผู้ป่วยเคลื่อนไหวตามเวลาจริง</small></a>{% endif %}
       <div class="badges">
         <span class="badge g">✔ ลดเวลารอ</span>
         <span class="badge s">📈 เพิ่มประสิทธิภาพ</span>
@@ -177,6 +177,8 @@ document.addEventListener('DOMContentLoaded', function () {
         <span class="busy" hidden>⏳ กำลังดึงข้อมูล… (ช่วงหลายสัปดาห์อาจใช้เวลา 5–15 วินาที)</span>
       </div>
       {% if warn %}<div class="warn">⚠ {{ warn }}</div>{% endif %}
+      {% if public_view and not print_mode %}<div class="warn">🔒 ข้อมูลสาธารณะ: ช่วงวันที่ปัดเป็นเดือนเต็ม
+        ({{ d.d1 }} ถึง {{ d.d2 }}) เพื่อไม่ให้ย้อนหาตัวผู้ป่วยรายวันได้ · เครื่องในโรงพยาบาลเลือกรายวันและดู Flow 3D ได้</div>{% endif %}
       {% if not print_mode and not data_audited %}
       {# Data Audit: ซ่อนเมื่อผู้ดูแลตั้ง OPD_DATA_AUDITED=1 หรือกด "ยืนยันว่าตรวจแล้ว" ที่หน้าตรวจข้อมูล (จำในเบราว์เซอร์นี้) #}
       <div class="warn audit-bar" data-audit-key="opd-audited:{{ hospital }}">
@@ -293,7 +295,7 @@ document.addEventListener('DOMContentLoaded', function () {
 
     <section class="block">
       <header><span class="no">4</span><span class="t">OPD Patient Flow</span>
-        <a class="tag flow3d-tag" href="{{ flow_url }}">🧊 ดู Flow 3D ›</a></header>
+        {% if drilldown %}<a class="tag flow3d-tag" href="{{ flow_url }}">🧊 ดู Flow 3D ›</a>{% endif %}</header>
       <div class="body">
         <div class="flow">
           {% for s in d.flow.steps %}
