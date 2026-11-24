@@ -1,7 +1,7 @@
 """OPD Dashboard — แดชบอร์ดบริหารจัดการผู้ป่วยนอก สำหรับโรงพยาบาลที่ใช้ HOSxP
 
 รันเอง:      python app.py            → http://127.0.0.1:5900/
-production:  gunicorn -b 0.0.0.0:5900 app:app   (ออกผ่าน sub-path /opd/)
+production:  gunicorn -b 127.0.0.1:5900 app:app หลัง Apache (sub-path /opd/) — ห้ามเปิด 0.0.0.0
 """
 
 import ipaddress
@@ -54,23 +54,30 @@ class PrefixMiddleware:
         self.wsgi_app = wsgi_app
 
     def __call__(self, environ, start_response):
-        prefix = environ.get("HTTP_X_FORWARDED_PREFIX", "")
+        # เชื่อ header เฉพาะจาก reverse proxy บนเครื่องเดียวกัน — เครื่องอื่นส่ง prefix ปลอม (เช่น //เว็บอื่น) มาแก้ลิงก์ไม่ได้
+        trusted = environ.get("REMOTE_ADDR", "") in TRUSTED_PROXIES
+        prefix = environ.get("HTTP_X_FORWARDED_PREFIX", "") if trusted else ""
+        if prefix and not _PREFIX_RE.fullmatch(prefix):
+            prefix = ""
         if prefix:
             environ["SCRIPT_NAME"] = prefix.rstrip("/")
             path = environ.get("PATH_INFO", "")
             if path.startswith(prefix):
                 environ["PATH_INFO"] = path[len(prefix):] or "/"
-        proto = environ.get("HTTP_X_FORWARDED_PROTO")
-        if proto:
+        proto = environ.get("HTTP_X_FORWARDED_PROTO") if trusted else None
+        if proto in ("http", "https"):
             environ["wsgi.url_scheme"] = proto
         return self.wsgi_app(environ, start_response)
 
+
+#: sub-path ที่รับจาก X-Forwarded-Prefix: /ชื่อ หรือ /ชื่อ/ชื่อ — ไม่รับ // หรืออักขระที่แทรกลงลิงก์ได้
+_PREFIX_RE = re.compile(r"(/[A-Za-z0-9_-]+)+/?")
 
 app = Flask(__name__)
 app.wsgi_app = PrefixMiddleware(app.wsgi_app)
 app.jinja_env.globals.update(smooth_path=charts.smooth_path, nice_max=charts.nice_max)
 #: เวอร์ชันของแอป — แสดงที่ท้ายหน้าและคู่มือ (ประวัติการแก้ไขอยู่ใน CHANGELOG.md)
-VERSION = "1.4.1"
+VERSION = "1.4.2"
 #: ผู้พัฒนา — แสดงท้ายทุกหน้าและในคู่มือ (ทุกโรงพยาบาลที่ติดตั้ง) แก้ทับได้ด้วย env OPD_DEV_CONTACT
 DEV_CONTACT = "นายเผด็จชัย สิงหล โรงพยาบาลวังน้ำเขียว โทร 086-257-4817"
 #: เปลี่ยนเลขนี้ทุกครั้งที่เปลี่ยนไอคอน — บังคับ Safari/Chrome โหลดไอคอนหน้าจอโฮมใหม่
@@ -250,6 +257,9 @@ TRUSTED_NETS = _networks(os.getenv("OPD_TRUSTED_IPS", ""))
 #: ช่วง IP ภายในที่ไม่ใช่ private มาตรฐาน (10/8, 172.16/12, 192.168/16) — เช่นเครือข่ายที่ใช้ 30.25.0.0/16
 #: ใช้เฉพาะคำขอที่ต่อเข้ามาตรง ไม่ผ่าน Cloudflare
 LAN_NETS = _networks(os.getenv("OPD_LAN_NETS", ""))
+#: IP ภายในมาตรฐาน — ระบุเอง ไม่ใช้ ip.is_private ที่นับช่วงสาธารณะบางช่วงเป็น private ด้วย
+#: (เช่น 198.18.0.0/15, 203.0.113.0/24)
+PRIVATE_NETS = _networks("10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8,::1/128,fc00::/7")
 
 
 #: เครื่อง reverse proxy (Apache บนเครื่องเดียวกัน) ที่เชื่อ X-Forwarded-For ได้
@@ -276,7 +286,9 @@ def _private(ip):
         ip = ipaddress.ip_address((ip or "").strip())
     except ValueError:
         return False
-    return ip.is_private or any(ip in net for net in LAN_NETS)
+    if getattr(ip, "ipv4_mapped", None):
+        ip = ip.ipv4_mapped
+    return any(ip in net for net in PRIVATE_NETS) or any(ip in net for net in LAN_NETS)
 
 
 def _from_lan():

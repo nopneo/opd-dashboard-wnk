@@ -64,7 +64,7 @@ sudo .venv/bin/pip install -r requirements.txt
 sudo cp .env.example .env
 sudo nano .env       # ใส่ DB_HOST / DB_USER / DB_PASS ของ รพ.
 sudo chown -R opd:opd /opt/opd_dashboard && sudo chmod 600 .env
-sudo -u opd .venv/bin/gunicorn -w 3 -t 120 -b 0.0.0.0:5900 app:app     # ทดสอบ แล้วเปิด http://<IP>:5900/
+sudo -u opd .venv/bin/gunicorn -w 3 -t 120 -b 127.0.0.1:5900 app:app   # ทดสอบ: curl http://127.0.0.1:5900/healthz
 ```
 
 รันเป็น service (systemd) — `/etc/systemd/system/opd-dashboard.service`:
@@ -78,7 +78,8 @@ After=network.target
 User=opd
 Group=opd
 WorkingDirectory=/opt/opd_dashboard
-ExecStart=/opt/opd_dashboard/.venv/bin/gunicorn -w 3 -t 120 -b 0.0.0.0:5900 app:app
+# ฟังเฉพาะ 127.0.0.1 หลัง Apache — ห้าม 0.0.0.0 (เครื่องใน LAN จะต่อพอร์ตตรงโดยไม่ผ่าน Apache) · เครื่องใน รพ. ใช้โดเมนภายใน
+ExecStart=/opt/opd_dashboard/.venv/bin/gunicorn -w 3 -t 120 -b 127.0.0.1:5900 app:app
 Restart=always
 
 [Install]
